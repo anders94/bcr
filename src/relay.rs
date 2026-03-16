@@ -10,7 +10,7 @@ use crate::packet::{extract_packet_info, is_already_relayed};
 use crate::socket::PacketSocket;
 
 pub struct Relay {
-    pub input_socket: PacketSocket,
+    pub input_sockets: Vec<PacketSocket>,
     pub output_sockets: Vec<PacketSocket>,
     pub filter: Filter,
     pub verbose: bool,
@@ -36,107 +36,113 @@ impl Relay {
         let mut stats = RelayStats::default();
 
         loop {
-            // Build fd_set for select()
+            // Build fd_set for select() across all input sockets
             let mut read_fds = FdSet::new();
-            read_fds.insert(self.input_socket.as_fd().as_fd());
+            for sock in &self.input_sockets {
+                read_fds.insert(sock.as_fd().as_fd());
+            }
 
             // Wait for packet (3 second timeout like bcrelay.c)
             let mut timeout = TimeVal::seconds(3);
             let result = select(None, &mut read_fds, None, None, Some(&mut timeout))?;
 
             if result == 0 {
-                // Timeout: could rediscover interfaces here in the future
                 continue;
             }
 
-            // Read packet
-            let len = match self.input_socket.recv(&mut recv_buf) {
-                Ok(l) => l,
-                Err(e) => {
-                    if self.verbose {
-                        eprintln!("Recv error: {}", e);
-                    }
-                    continue;
-                }
-            };
-
-            stats.packets_received += 1;
-
-            // HOTPATH STARTS HERE
-            // Goal: minimize work between recv and send
-
-            // 1. Loop prevention check (fast, no allocation)
-            if is_already_relayed(&recv_buf[..len]) {
-                stats.filtered_loop += 1;
-                continue;
-            }
-
-            // 2. Extract packet info (stack allocation only)
-            let pkt_info = match extract_packet_info(&recv_buf[..len]) {
-                Some(info) => info,
-                None => {
-                    stats.filtered_invalid += 1;
-                    continue;
-                }
-            };
-
-            // 3. Apply filters (inline, cache-friendly sequential scan)
-            if !self.filter.should_relay(&pkt_info) {
-                if self.verbose {
-                    log_filtered("no match", &pkt_info);
-                }
-                stats.filtered_rules += 1;
-                continue;
-            }
-
-            // 4. Get NAT options (already matched, cheap lookup)
-            let nat_rule = self.filter.get_nat_rule(&pkt_info).unwrap();
-
-            // 5. Relay to all output interfaces
-            for out_sock in &self.output_sockets {
-                // For directed broadcasts, only relay to interfaces whose subnet
-                // matches the destination. Limited broadcast (255.255.255.255)
-                // is always relayed.
-                if pkt_info.dst_ip != std::net::Ipv4Addr::new(255, 255, 255, 255)
-                    && pkt_info.dst_ip != out_sock.broadcast_addr
-                {
+            // Find which input socket(s) have data and read from them
+            for in_sock in &self.input_sockets {
+                if !read_fds.contains(in_sock.as_fd().as_fd()) {
                     continue;
                 }
 
-                // Copy to send buffer (avoid modifying recv buffer)
-                send_buf[..len].copy_from_slice(&recv_buf[..len]);
-
-                // Apply NAT in-place, rewriting destination to the output
-                // interface's broadcast address (matching bcrelay.c behaviour)
-                if let Err(e) = apply_nat(
-                    &mut send_buf[..len],
-                    &nat_rule.nat,
-                    out_sock.broadcast_addr,
-                ) {
-                    if self.verbose {
-                        eprintln!("NAT error: {}", e);
-                    }
-                    continue;
-                }
-
-                // Send packet
-                match out_sock.send(&send_buf[..len]) {
-                    Ok(_) => {
-                        stats.packets_relayed += 1;
-
-                        if self.verbose {
-                            log_relay(&pkt_info, len, &out_sock.ifname);
-                        }
-                    }
+                let len = match in_sock.recv(&mut recv_buf) {
+                    Ok(l) => l,
                     Err(e) => {
                         if self.verbose {
-                            eprintln!("Send error on {}: {}", out_sock.ifname, e);
+                            eprintln!("Recv error on {}: {}", in_sock.ifname, e);
                         }
-                        stats.send_errors += 1;
+                        continue;
+                    }
+                };
+
+                stats.packets_received += 1;
+
+                // HOTPATH STARTS HERE
+
+                // 1. Loop prevention check (fast, no allocation)
+                if is_already_relayed(&recv_buf[..len]) {
+                    stats.filtered_loop += 1;
+                    continue;
+                }
+
+                // 2. Extract packet info (stack allocation only)
+                let pkt_info = match extract_packet_info(&recv_buf[..len]) {
+                    Some(info) => info,
+                    None => {
+                        stats.filtered_invalid += 1;
+                        continue;
+                    }
+                };
+
+                // 3. Apply filters (inline, cache-friendly sequential scan)
+                if !self.filter.should_relay(&pkt_info) {
+                    if self.verbose {
+                        log_filtered("no match", &pkt_info);
+                    }
+                    stats.filtered_rules += 1;
+                    continue;
+                }
+
+                // 4. Get NAT options (already matched, cheap lookup)
+                let nat_rule = self.filter.get_nat_rule(&pkt_info).unwrap();
+
+                // 5. Relay to all output interfaces
+                for out_sock in &self.output_sockets {
+                    // For directed broadcasts, only relay to interfaces whose subnet
+                    // matches the destination. Limited broadcast (255.255.255.255)
+                    // is always relayed.
+                    if pkt_info.dst_ip != std::net::Ipv4Addr::new(255, 255, 255, 255)
+                        && pkt_info.dst_ip != out_sock.broadcast_addr
+                    {
+                        continue;
+                    }
+
+                    // Copy to send buffer (avoid modifying recv buffer)
+                    send_buf[..len].copy_from_slice(&recv_buf[..len]);
+
+                    // Apply NAT in-place, rewriting destination to the output
+                    // interface's broadcast address (matching bcrelay.c behaviour)
+                    if let Err(e) = apply_nat(
+                        &mut send_buf[..len],
+                        &nat_rule.nat,
+                        out_sock.broadcast_addr,
+                    ) {
+                        if self.verbose {
+                            eprintln!("NAT error: {}", e);
+                        }
+                        continue;
+                    }
+
+                    // Send packet
+                    match out_sock.send(&send_buf[..len]) {
+                        Ok(_) => {
+                            stats.packets_relayed += 1;
+
+                            if self.verbose {
+                                log_relay(&pkt_info, len, &out_sock.ifname);
+                            }
+                        }
+                        Err(e) => {
+                            if self.verbose {
+                                eprintln!("Send error on {}: {}", out_sock.ifname, e);
+                            }
+                            stats.send_errors += 1;
+                        }
                     }
                 }
+                // HOTPATH ENDS HERE
             }
-            // HOTPATH ENDS HERE
         }
     }
 }

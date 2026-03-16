@@ -38,9 +38,9 @@ pub enum BcrError {
 #[command(version = "0.1.0")]
 #[command(about = "Modern broadcast relay for Linux", long_about = None)]
 struct Cli {
-    /// Input interface to receive broadcasts from
-    #[arg(short = 'i', long, required = true)]
-    input: String,
+    /// Input interface(s) to receive broadcasts from (can be specified multiple times)
+    #[arg(short = 'i', long, required = true, num_args = 1..)]
+    input: Vec<String>,
 
     /// Output interface(s) to relay broadcasts to (can be specified multiple times)
     #[arg(short = 'o', long, required = true)]
@@ -72,8 +72,14 @@ fn main() -> Result<()> {
     validate_startup(&config, &cli.input, &cli.output)?;
 
     // Create sockets
-    let input_socket = PacketSocket::new(&cli.input)
-        .with_context(|| format!("Failed to create socket for input interface '{}'", cli.input))?;
+    let input_sockets: Vec<_> = cli
+        .input
+        .iter()
+        .map(|if_name| {
+            PacketSocket::new(if_name)
+                .with_context(|| format!("Failed to create socket for input interface '{}'", if_name))
+        })
+        .collect::<Result<_, _>>()?;
 
     let output_sockets: Vec<_> = cli
         .output
@@ -87,7 +93,7 @@ fn main() -> Result<()> {
     // Initialize relay
     let filter = Filter::new(config);
     let mut relay = Relay {
-        input_socket,
+        input_sockets,
         output_sockets,
         filter,
         verbose: cli.verbose,
@@ -95,7 +101,7 @@ fn main() -> Result<()> {
 
     // Print startup banner
     println!("bcr v0.1.0 starting");
-    println!("  Input:   {}", cli.input);
+    println!("  Input:   {}", cli.input.join(", "));
     println!("  Output:  {}", cli.output.join(", "));
     println!("  Config:  {}", cli.config.as_deref().unwrap_or("(none)"));
     println!("  Verbose: {}", cli.verbose);
@@ -108,7 +114,7 @@ fn main() -> Result<()> {
 }
 
 /// Validate configuration and environment before starting relay
-fn validate_startup(config: &Config, input_if: &str, output_ifs: &[String]) -> Result<()> {
+fn validate_startup(config: &Config, input_ifs: &[String], output_ifs: &[String]) -> Result<()> {
     // Check interfaces exist and are up
     let interfaces = interface::discover_interfaces()?;
     let if_names: Vec<&str> = interfaces
@@ -117,12 +123,14 @@ fn validate_startup(config: &Config, input_if: &str, output_ifs: &[String]) -> R
         .map(|i| i.name.as_str())
         .collect();
 
-    if !if_names.contains(&input_if) {
-        return Err(BcrError::Interface(format!(
-            "Input interface '{}' not found or not up",
-            input_if
-        ))
-        .into());
+    for input_if in input_ifs {
+        if !if_names.contains(&input_if.as_str()) {
+            return Err(BcrError::Interface(format!(
+                "Input interface '{}' not found or not up",
+                input_if
+            ))
+            .into());
+        }
     }
 
     for out_if in output_ifs {
