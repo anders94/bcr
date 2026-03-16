@@ -18,6 +18,10 @@ pub fn extract_packet_info(buf: &[u8]) -> Option<PacketInfo> {
     }
 
     let src_ip = ip_packet.get_source();
+    if src_ip == Ipv4Addr::new(0, 0, 0, 0) {
+        return None;
+    }
+
     let protocol_num = ip_packet.get_next_level_protocol();
 
     // Parse transport layer
