@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::net::Ipv4Addr;
 use std::os::unix::io::{AsRawFd, OwnedFd};
 
 #[cfg(target_os = "linux")]
@@ -7,9 +8,10 @@ use nix::sys::socket::{socket, AddressFamily, SockFlag, SockProtocol, SockType};
 /// Raw packet socket for AF_PACKET
 pub struct PacketSocket {
     fd: OwnedFd,
-    #[allow(dead_code)]
     ifindex: i32,
     pub ifname: String,
+    /// Broadcast address of the interface (used as relay destination)
+    pub broadcast_addr: Ipv4Addr,
 }
 
 #[cfg(target_os = "linux")]
@@ -49,10 +51,25 @@ impl PacketSocket {
 
         let fd = raw_fd;
 
+        // Look up the interface's broadcast address via getifaddrs
+        let broadcast_addr = nix::ifaddrs::getifaddrs()
+            .ok()
+            .and_then(|addrs| {
+                addrs
+                    .filter(|a| a.interface_name == ifname)
+                    .find_map(|a| {
+                        a.broadcast.and_then(|b| {
+                            b.as_sockaddr_in().map(|s| Ipv4Addr::from(s.ip()))
+                        })
+                    })
+            })
+            .unwrap_or(Ipv4Addr::new(255, 255, 255, 255));
+
         Ok(PacketSocket {
             fd,
             ifindex: ifindex as i32,
             ifname: ifname.to_string(),
+            broadcast_addr,
         })
     }
 
@@ -64,9 +81,30 @@ impl PacketSocket {
         nix::unistd::read(&self.fd, buf)
     }
 
-    /// Send packet
+    /// Send packet to broadcast address on the bound interface
     pub fn send(&self, data: &[u8]) -> nix::Result<usize> {
-        nix::unistd::write(&self.fd, data)
+        let sll = libc::sockaddr_ll {
+            sll_family: libc::AF_PACKET as u16,
+            sll_protocol: (libc::ETH_P_IP as u16).to_be(),
+            sll_ifindex: self.ifindex,
+            sll_hatype: 0,
+            sll_pkttype: 0,
+            sll_halen: 6,
+            sll_addr: [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0], // Broadcast MAC
+        };
+        unsafe {
+            let sa = &sll as *const libc::sockaddr_ll as *const libc::sockaddr;
+            let sa_len = std::mem::size_of::<libc::sockaddr_ll>() as libc::socklen_t;
+            nix::errno::Errno::result(libc::sendto(
+                self.fd.as_raw_fd(),
+                data.as_ptr() as *const libc::c_void,
+                data.len(),
+                0,
+                sa,
+                sa_len,
+            ))
+            .map(|n| n as usize)
+        }
     }
 
     pub fn as_fd(&self) -> &OwnedFd {

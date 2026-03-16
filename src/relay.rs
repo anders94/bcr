@@ -1,7 +1,6 @@
 use anyhow::Result;
 use nix::sys::select::{select, FdSet};
 use nix::sys::time::{TimeVal, TimeValLike};
-use std::net::Ipv4Addr;
 use std::os::fd::AsFd;
 
 use crate::filter::Filter;
@@ -68,9 +67,6 @@ impl Relay {
 
             // 1. Loop prevention check (fast, no allocation)
             if is_already_relayed(&recv_buf[..len]) {
-                if self.verbose {
-                    println!("FILTERED: Already relayed packet (TTL=1, UDP checksum=0)");
-                }
                 stats.filtered_loop += 1;
                 continue;
             }
@@ -79,9 +75,6 @@ impl Relay {
             let pkt_info = match extract_packet_info(&recv_buf[..len]) {
                 Some(info) => info,
                 None => {
-                    if self.verbose {
-                        println!("FILTERED: Not a valid broadcast packet");
-                    }
                     stats.filtered_invalid += 1;
                     continue;
                 }
@@ -90,7 +83,7 @@ impl Relay {
             // 3. Apply filters (inline, cache-friendly sequential scan)
             if !self.filter.should_relay(&pkt_info) {
                 if self.verbose {
-                    log_filtered("rule", &pkt_info);
+                    log_filtered("no match", &pkt_info);
                 }
                 stats.filtered_rules += 1;
                 continue;
@@ -101,16 +94,24 @@ impl Relay {
 
             // 5. Relay to all output interfaces
             for out_sock in &self.output_sockets {
+                // For directed broadcasts, only relay to interfaces whose subnet
+                // matches the destination. Limited broadcast (255.255.255.255)
+                // is always relayed.
+                if pkt_info.dst_ip != std::net::Ipv4Addr::new(255, 255, 255, 255)
+                    && pkt_info.dst_ip != out_sock.broadcast_addr
+                {
+                    continue;
+                }
+
                 // Copy to send buffer (avoid modifying recv buffer)
                 send_buf[..len].copy_from_slice(&recv_buf[..len]);
 
-                // Apply NAT in-place
-                // Use 255.255.255.255 as default broadcast address
-                // TODO: get actual interface broadcast address
+                // Apply NAT in-place, rewriting destination to the output
+                // interface's broadcast address (matching bcrelay.c behaviour)
                 if let Err(e) = apply_nat(
                     &mut send_buf[..len],
                     &nat_rule.nat,
-                    Ipv4Addr::new(255, 255, 255, 255),
+                    out_sock.broadcast_addr,
                 ) {
                     if self.verbose {
                         eprintln!("NAT error: {}", e);
@@ -123,8 +124,9 @@ impl Relay {
                     Ok(_) => {
                         stats.packets_relayed += 1;
 
-                        // Log relay (one line to STDOUT)
-                        log_relay(&pkt_info, len, &out_sock.ifname);
+                        if self.verbose {
+                            log_relay(&pkt_info, len, &out_sock.ifname);
+                        }
                     }
                     Err(e) => {
                         if self.verbose {

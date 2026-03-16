@@ -11,10 +11,6 @@ pub fn apply_nat(buf: &mut [u8], nat: &NatOptions, dest_broadcast: Ipv4Addr) -> 
     let mut ip_pkt = MutableIpv4Packet::new(buf)
         .ok_or_else(|| anyhow!("Invalid IP packet"))?;
 
-    // Store original values for potential checksum calculation (currently unused)
-    let _orig_src_ip = ip_pkt.get_source();
-    let _orig_dst_ip = ip_pkt.get_destination();
-
     // Apply IP-level NAT
     if let Some(new_src) = nat.source_ip {
         ip_pkt.set_source(new_src);
@@ -31,7 +27,7 @@ pub fn apply_nat(buf: &mut [u8], nat: &NatOptions, dest_broadcast: Ipv4Addr) -> 
 
     // Get protocol before modifying transport layer
     let protocol = ip_pkt.get_next_level_protocol();
-    let ip_header_len = ((ip_pkt.get_version() & 0x0F) as usize) * 4;
+    let ip_header_len = ip_pkt.get_header_length() as usize * 4;
 
     // Apply transport-layer NAT and update checksums
     match protocol {
