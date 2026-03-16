@@ -7,7 +7,7 @@ mod packet;
 mod relay;
 mod socket;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 use config::Config;
 use filter::Filter;
@@ -47,8 +47,8 @@ struct Cli {
     output: Vec<String>,
 
     /// Configuration file path
-    #[arg(short = 'c', long, default_value = "/etc/bcr.conf")]
-    config: String,
+    #[arg(short = 'c', long)]
+    config: Option<String>,
 
     /// Verbose mode (show filtered packets)
     #[arg(short = 'v', long)]
@@ -61,9 +61,12 @@ fn main() -> Result<()> {
     // Validate permissions
     validate_permissions()?;
 
-    // Load configuration
-    let config = Config::from_file(&cli.config)
-        .map_err(|e| BcrError::Config(format!("Failed to load config: {}", e)))?;
+    // Load configuration (optional; error only if explicitly specified but not found)
+    let config = match &cli.config {
+        Some(path) => Config::from_file(path)
+            .map_err(|e| BcrError::Config(format!("Failed to load config: {}", e)))?,
+        None => Config::allow_all(),
+    };
 
     // Validate environment
     validate_startup(&config, &cli.input, &cli.output)?;
@@ -94,7 +97,7 @@ fn main() -> Result<()> {
     println!("bcr v0.1.0 starting");
     println!("  Input:   {}", cli.input);
     println!("  Output:  {}", cli.output.join(", "));
-    println!("  Config:  {}", cli.config);
+    println!("  Config:  {}", cli.config.as_deref().unwrap_or("(none)"));
     println!("  Verbose: {}", cli.verbose);
     println!();
 

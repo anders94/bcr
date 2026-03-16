@@ -4,7 +4,6 @@ use nix::sys::time::{TimeVal, TimeValLike};
 use std::net::Ipv4Addr;
 use std::os::fd::AsFd;
 
-use crate::config::PacketInfo;
 use crate::filter::Filter;
 use crate::logging::{log_filtered, log_relay};
 use crate::nat::apply_nat;

@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use pnet::packet::ipv4::{checksum as ipv4_checksum, MutableIpv4Packet};
 use pnet::packet::tcp::{ipv4_checksum as tcp_checksum, MutableTcpPacket};
 use pnet::packet::udp::MutableUdpPacket;
-use pnet::packet::MutablePacket;
 use std::net::Ipv4Addr;
 
 use crate::config::NatOptions;

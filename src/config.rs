@@ -148,6 +148,22 @@ impl Config {
         self.rules.iter().find(|rule| rule.matches(pkt))
     }
 
+    /// Default config that allows all broadcast traffic
+    pub fn allow_all() -> Self {
+        Config {
+            rules: vec![Rule {
+                action: Action::Allow,
+                protocol: Protocol::Any,
+                src_ip: IpMatcher::Any,
+                src_port: PortMatcher::Any,
+                dst_ip: IpMatcher::Any,
+                dst_port: PortMatcher::Any,
+                broadcast_type: BroadcastType::Any,
+                nat: NatOptions::default(),
+            }],
+        }
+    }
+
     /// Load config from file
     pub fn from_file(path: &str) -> Result<Self> {
         let content = fs::read_to_string(path)

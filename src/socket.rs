@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
+use std::os::unix::io::{AsRawFd, OwnedFd};
 
 #[cfg(target_os = "linux")]
 use nix::sys::socket::{socket, AddressFamily, SockFlag, SockProtocol, SockType};
@@ -43,12 +43,11 @@ impl PacketSocket {
         unsafe {
             let sa = &sll as *const libc::sockaddr_ll as *const libc::sockaddr;
             let sa_len = std::mem::size_of::<libc::sockaddr_ll>() as libc::socklen_t;
-            nix::errno::Errno::result(libc::bind(raw_fd, sa, sa_len))
+            nix::errno::Errno::result(libc::bind(raw_fd.as_raw_fd(), sa, sa_len))
                 .context(format!("Failed to bind socket to interface '{}'", ifname))?;
         }
 
-        // Wrap raw fd in OwnedFd for automatic cleanup
-        let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+        let fd = raw_fd;
 
         Ok(PacketSocket {
             fd,

@@ -1,5 +1,4 @@
 use crate::config::{PacketInfo, Protocol};
-use std::net::Ipv4Addr;
 
 /// One-line relay log format
 /// Format: RELAY: SRC_IP:PORT -> DST_IP:PORT (PROTO, SIZE bytes) [via INTERFACE]
