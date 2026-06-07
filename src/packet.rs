@@ -1,5 +1,4 @@
 use pnet::packet::ipv4::Ipv4Packet;
-use pnet::packet::tcp::TcpPacket;
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
 use std::net::Ipv4Addr;
@@ -43,17 +42,7 @@ pub fn extract_packet_info(buf: &[u8]) -> Option<PacketInfo> {
                 dst_port: udp.get_destination(),
             })
         }
-        pnet::packet::ip::IpNextHeaderProtocols::Tcp => {
-            let tcp = TcpPacket::new(payload)?;
-            Some(PacketInfo {
-                protocol: Protocol::Tcp,
-                src_ip,
-                dst_ip,
-                src_port: tcp.get_source(),
-                dst_port: tcp.get_destination(),
-            })
-        }
-        _ => None, // Other protocols ignored
+        _ => None, // Only UDP is relayed; other protocols ignored
     }
 }
 

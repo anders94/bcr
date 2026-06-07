@@ -12,9 +12,12 @@ pub enum Action {
 }
 
 /// Protocol filter
+///
+/// Only UDP is relayed. TCP is connection-oriented unicast and has no
+/// meaningful broadcast/multicast semantics, so it is intentionally not
+/// supported (relaying it also had no loop-prevention marker).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
-    Tcp,
     Udp,
     Any,
 }
@@ -214,9 +217,13 @@ fn parse_rule(line: &str) -> Result<Rule> {
     };
 
     let protocol = match parts[1] {
-        "tcp" => Protocol::Tcp,
         "udp" => Protocol::Udp,
         "any" => Protocol::Any,
+        "tcp" => {
+            return Err(anyhow!(
+                "TCP is not supported: TCP has no broadcast/multicast semantics and is not relayed"
+            ))
+        }
         _ => return Err(anyhow!("Invalid protocol: {}", parts[1])),
     };
 
@@ -347,6 +354,15 @@ mod tests {
         assert_eq!(config.rules.len(), 1);
         assert!(matches!(config.rules[0].action, Action::Allow));
         assert!(matches!(config.rules[0].protocol, Protocol::Udp));
+    }
+
+    #[test]
+    fn test_tcp_protocol_rejected() {
+        // TCP has no broadcast semantics and is intentionally unsupported;
+        // a config using it must fail to parse rather than silently relay.
+        let result = Config::parse("allow tcp any:80 255.255.255.255:80");
+        let err = result.err().expect("tcp rule should be rejected");
+        assert!(err.to_string().contains("TCP is not supported"));
     }
 
     #[test]

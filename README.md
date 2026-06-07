@@ -1,6 +1,6 @@
 # BCR - Broadcast Relay
 
-A modern, performance-optimized broadcast relay for Linux written in Rust. BCR is a modernized replacement for `bcrelay` from the pptpd project, designed to relay UDP/TCP broadcast packets between network interfaces with configurable filtering and NAT capabilities.
+A modern, performance-optimized broadcast relay for Linux written in Rust. BCR is a modernized replacement for `bcrelay` from the pptpd project, designed to relay UDP broadcast and multicast packets between network interfaces with configurable filtering and NAT capabilities.
 
 ## Features
 
@@ -60,7 +60,7 @@ ACTION PROTO SRC_IP[:SRC_PORT] DST_IP[:DST_PORT] [NAT_OPTIONS]
 ### Configuration Fields
 
 - **ACTION**: `allow` or `deny`
-- **PROTO**: `udp`, `tcp`, or `any`
+- **PROTO**: `udp` or `any` (TCP is not relayed — it has no broadcast/multicast semantics)
 - **SRC_IP**: Source IP address (`x.x.x.x`, `x.x.x.x/CIDR`, or `any`)
 - **SRC_PORT**: Source port (`port`, `start-end`, or `any`)
 - **DST_IP**: Destination IP (`x.x.x.x`, `255.255.255.255`, `directed`, or `any`)
@@ -104,7 +104,7 @@ BCR uses Linux AF_PACKET raw sockets to capture broadcast packets on the input i
 
 1. Receives packet on input interface
 2. Checks for relay loops (rejects packets with TTL=1 and UDP checksum=0)
-3. Extracts packet headers (IP, UDP/TCP)
+3. Extracts packet headers (IP, UDP)
 4. Matches against configuration rules (first match wins)
 5. If allowed, applies NAT transformations (if configured)
 6. Sends packet to all output interfaces
