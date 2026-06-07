@@ -47,7 +47,24 @@ sudo bcr -i eth0 -o eth1 -c /etc/bcr.conf -v
 - `-i, --input <INTERFACE>` - Input interface to receive broadcasts from (required)
 - `-o, --output <INTERFACE>` - Output interface(s) to relay to (can be specified multiple times, required)
 - `-c, --config <FILE>` - Configuration file path (default: /etc/bcr.conf)
+- `-u, --user <USER>` - User to drop privileges to after creating sockets (default: `nobody`)
+- `--no-drop` - Do not drop privileges; run as root for the entire lifetime
+- `--rate-limit <PPS>` - Max packets/sec to relay, `0` = unlimited (default: `0`). Caps storm amplification
+- `--rate-burst <N>` - Burst capacity for the rate limiter (default: one second of `--rate-limit`)
 - `-v, --verbose` - Verbose mode (show filtered packets)
+
+### Denial-of-service hardening
+
+A kernel BPF filter is always attached to each input socket so it only wakes
+the relay for frames it could actually relay (IPv4/UDP sent to a
+multicast/broadcast MAC). All other traffic — TCP, ARP, IPv6, unicast — is
+dropped by the kernel before reaching userspace.
+
+`--rate-limit` bounds how many packets per second are relayed. Because each
+accepted packet is fanned out to every output interface, an unbounded
+broadcast storm on an input interface would otherwise be amplified across all
+outputs. The limiter uses a token bucket: up to `--rate-burst` packets may pass
+back-to-back, refilling at `--rate-limit` per second.
 
 ## Configuration
 

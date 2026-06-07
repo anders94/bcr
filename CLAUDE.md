@@ -68,7 +68,8 @@ cargo check
 
 - **main.rs**: CLI argument parsing, initialization, permission validation, orchestration
 - **config.rs**: Config file parser, rule data structures, packet matching logic with pre-computed CIDR masks
-- **socket.rs**: AF_PACKET raw socket wrapper for Linux (PF_PACKET + SOCK_DGRAM)
+- **socket.rs**: AF_PACKET raw socket wrapper for Linux (PF_PACKET + SOCK_DGRAM); attaches a kernel BPF filter so only relayable frames (multicast/broadcast-MAC IPv4 UDP) wake userspace
+- **ratelimit.rs**: Token-bucket limiter bounding accepted packets/sec to cap storm amplification
 - **interface.rs**: Network interface discovery using Linux ioctls
 - **packet.rs**: Zero-copy packet parsing and metadata extraction
 - **filter.rs**: Fast sequential rule matching with early exits
@@ -86,10 +87,11 @@ The relay loop in `relay.rs` is the most performance-critical code:
 3. Loop prevention check (TTL=1 && UDP checksum=0)
 4. Extract packet info (stack-allocated struct)
 5. Sequential rule matching (first match wins)
-6. Copy to send buffer
-7. Apply NAT in-place (rewrite IPs/ports, recalc checksums)
-8. send() to all output interfaces
-9. Log to STDOUT
+6. Rate-limit check (token bucket; drop if over budget)
+7. Copy to send buffer
+8. Apply NAT in-place (rewrite IPs/ports, recalc checksums)
+9. send() to all output interfaces
+10. Log to STDOUT
 ```
 
 **Optimization requirements**:
@@ -271,9 +273,8 @@ sudo perf report
 ## Future Enhancement Ideas
 
 - systemd service file and socket activation
-- Rate limiting per rule (DoS protection)
+- Per-rule rate limiting (a global `--rate-limit` token bucket already exists)
 - Prometheus metrics export
 - Hot config reload (SIGHUP)
-- Privilege dropping after socket creation
-- BPF filter offload for common rules
+- BPF filter offload for common rules (a fixed multicast/IPv4/UDP BPF filter is already attached)
 - AF_XDP support for extreme performance

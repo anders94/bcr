@@ -4,6 +4,7 @@ mod interface;
 mod logging;
 mod nat;
 mod packet;
+mod ratelimit;
 mod relay;
 mod socket;
 
@@ -58,6 +59,14 @@ struct Cli {
     #[arg(long)]
     no_drop: bool,
 
+    /// Max packets/sec to relay (0 = unlimited). Caps storm amplification.
+    #[arg(long, default_value_t = 0)]
+    rate_limit: u32,
+
+    /// Burst capacity for the rate limiter (defaults to one second of rate)
+    #[arg(long)]
+    rate_burst: Option<u32>,
+
     /// Verbose mode (show filtered packets)
     #[arg(short = 'v', long)]
     verbose: bool,
@@ -100,10 +109,18 @@ fn main() -> Result<()> {
 
     // Initialize relay
     let filter = Filter::new(config);
+    let rate_limiter = if cli.rate_limit > 0 {
+        // Default burst to one second of rate so a short spike is absorbed.
+        let burst = cli.rate_burst.unwrap_or(cli.rate_limit);
+        Some(ratelimit::RateLimiter::new(cli.rate_limit, burst))
+    } else {
+        None
+    };
     let mut relay = Relay {
         input_sockets,
         output_sockets,
         filter,
+        rate_limiter,
         verbose: cli.verbose,
     };
 
@@ -113,6 +130,14 @@ fn main() -> Result<()> {
     println!("  Output:  {}", cli.output.join(", "));
     println!("  Config:  {}", cli.config.as_deref().unwrap_or("(none)"));
     println!("  Drop to: {}", if cli.no_drop { "(disabled)" } else { &cli.user });
+    println!(
+        "  Rate:    {}",
+        if cli.rate_limit > 0 {
+            format!("{} pkt/s (burst {})", cli.rate_limit, cli.rate_burst.unwrap_or(cli.rate_limit))
+        } else {
+            "unlimited".to_string()
+        }
+    );
     println!("  Verbose: {}", cli.verbose);
     println!();
 
