@@ -51,6 +51,24 @@ impl PacketSocket {
 
         let fd = raw_fd;
 
+        // Enable all-multicast reception so the NIC delivers multicast frames
+        // (e.g. mDNS 224.0.0.251) even when no app on this host has joined the group.
+        let mreq = libc::packet_mreq {
+            mr_ifindex: ifindex as i32,
+            mr_type: libc::PACKET_MR_ALLMULTI as libc::c_ushort,
+            mr_alen: 0,
+            mr_address: [0; 8],
+        };
+        unsafe {
+            libc::setsockopt(
+                fd.as_raw_fd(),
+                libc::SOL_PACKET,
+                libc::PACKET_ADD_MEMBERSHIP,
+                &mreq as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::packet_mreq>() as libc::socklen_t,
+            );
+        }
+
         // Look up the interface's broadcast address via getifaddrs
         let broadcast_addr = nix::ifaddrs::getifaddrs()
             .ok()

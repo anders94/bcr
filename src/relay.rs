@@ -16,24 +16,12 @@ pub struct Relay {
     pub verbose: bool,
 }
 
-#[derive(Default)]
-struct RelayStats {
-    packets_received: u64,
-    packets_relayed: u64,
-    filtered_loop: u64,
-    filtered_invalid: u64,
-    filtered_rules: u64,
-    send_errors: u64,
-}
-
 impl Relay {
     /// Main relay loop - CRITICAL HOTPATH
     pub fn run(&mut self) -> Result<()> {
         // Pre-allocate buffers (avoid allocation in loop)
         let mut recv_buf = vec![0u8; 2048]; // Max packet size
         let mut send_buf = vec![0u8; 2048];
-
-        let mut stats = RelayStats::default();
 
         loop {
             // Build fd_set for select() across all input sockets
@@ -66,23 +54,17 @@ impl Relay {
                     }
                 };
 
-                stats.packets_received += 1;
-
                 // HOTPATH STARTS HERE
 
                 // 1. Loop prevention check (fast, no allocation)
                 if is_already_relayed(&recv_buf[..len]) {
-                    stats.filtered_loop += 1;
                     continue;
                 }
 
                 // 2. Extract packet info (stack allocation only)
                 let pkt_info = match extract_packet_info(&recv_buf[..len]) {
                     Some(info) => info,
-                    None => {
-                        stats.filtered_invalid += 1;
-                        continue;
-                    }
+                    None => continue,
                 };
 
                 // 3. Apply filters (inline, cache-friendly sequential scan)
@@ -90,7 +72,6 @@ impl Relay {
                     if self.verbose {
                         log_filtered("no match", &pkt_info);
                     }
-                    stats.filtered_rules += 1;
                     continue;
                 }
 
@@ -99,10 +80,10 @@ impl Relay {
 
                 // 5. Relay to all output interfaces
                 for out_sock in &self.output_sockets {
-                    // For directed broadcasts, only relay to interfaces whose subnet
-                    // matches the destination. Limited broadcast (255.255.255.255)
-                    // is always relayed.
-                    if pkt_info.dst_ip != std::net::Ipv4Addr::new(255, 255, 255, 255)
+                    // Multicast and limited broadcast go to all interfaces.
+                    // Directed broadcasts only go to the interface whose subnet matches.
+                    if !pkt_info.dst_ip.is_multicast()
+                        && pkt_info.dst_ip != std::net::Ipv4Addr::new(255, 255, 255, 255)
                         && pkt_info.dst_ip != out_sock.broadcast_addr
                     {
                         continue;
@@ -127,8 +108,6 @@ impl Relay {
                     // Send packet
                     match out_sock.send(&send_buf[..len]) {
                         Ok(_) => {
-                            stats.packets_relayed += 1;
-
                             if self.verbose {
                                 log_relay(&pkt_info, len, &out_sock.ifname);
                             }
@@ -137,7 +116,6 @@ impl Relay {
                             if self.verbose {
                                 eprintln!("Send error on {}: {}", out_sock.ifname, e);
                             }
-                            stats.send_errors += 1;
                         }
                     }
                 }
