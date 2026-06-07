@@ -17,8 +17,8 @@ pub fn apply_nat(buf: &mut [u8], nat: &NatOptions, dest_broadcast: Ipv4Addr) -> 
     }
     if let Some(new_dst) = nat.dest_ip {
         ip_pkt.set_destination(new_dst);
-    } else {
-        // Always rewrite destination to broadcast address for relaying
+    } else if !ip_pkt.get_destination().is_multicast() {
+        // Rewrite destination to output broadcast address; preserve multicast as-is
         ip_pkt.set_destination(dest_broadcast);
     }
 

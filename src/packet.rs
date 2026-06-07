@@ -52,12 +52,12 @@ pub fn extract_packet_info(buf: &[u8]) -> Option<PacketInfo> {
     }
 }
 
-/// Check if IP is broadcast
+/// Check if IP is broadcast or multicast
 #[inline(always)]
 pub fn is_broadcast(ip: Ipv4Addr) -> bool {
     let octets = ip.octets();
-    // Limited broadcast or directed broadcast (last octet = 255)
-    ip == Ipv4Addr::new(255, 255, 255, 255) || octets[3] == 255
+    // Limited broadcast, directed broadcast (last octet = 255), or multicast (224.0.0.0/4)
+    ip == Ipv4Addr::new(255, 255, 255, 255) || octets[3] == 255 || ip.is_multicast()
 }
 
 /// Loop prevention check (mirrors bcrelay.c logic)
@@ -96,5 +96,8 @@ mod tests {
         assert!(is_broadcast(Ipv4Addr::new(255, 255, 255, 255)));
         assert!(is_broadcast(Ipv4Addr::new(192, 168, 1, 255)));
         assert!(!is_broadcast(Ipv4Addr::new(192, 168, 1, 100)));
+        assert!(is_broadcast(Ipv4Addr::new(224, 0, 0, 251))); // mDNS multicast
+        assert!(is_broadcast(Ipv4Addr::new(239, 255, 255, 250))); // SSDP multicast
+        assert!(!is_broadcast(Ipv4Addr::new(10, 20, 1, 173)));
     }
 }
