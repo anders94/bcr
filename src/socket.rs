@@ -77,7 +77,7 @@ impl PacketSocket {
                     .filter(|a| a.interface_name == ifname)
                     .find_map(|a| {
                         a.broadcast.and_then(|b| {
-                            b.as_sockaddr_in().map(|s| Ipv4Addr::from(s.ip()))
+                            b.as_sockaddr_in().map(|s| s.ip())
                         })
                     })
             })
