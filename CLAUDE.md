@@ -143,7 +143,7 @@ enum IpMatcher {
 ```rust
 struct Rule {
     action: Action,           // Allow/Deny
-    protocol: Protocol,       // TCP/UDP/Any
+    protocol: Protocol,       // Udp/Any (TCP is not relayed)
     src_ip: IpMatcher,       // Check order: protocol → ports → IPs
     src_port: PortMatcher,   // (most selective first)
     dst_ip: IpMatcher,
@@ -186,7 +186,7 @@ struct PacketInfo {
 - Always recalculate checksums after any header modification
 - IP checksum: After IP header changes
 - UDP checksum: Can be zero (we use this for loop prevention)
-- TCP checksum: Must be correct (includes pseudo-header with IPs)
+- Only UDP is relayed; TCP has no broadcast semantics and is rejected at config parse time
 - Use pnet checksum utilities (don't hand-roll)
 
 ### Privilege Requirements

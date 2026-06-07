@@ -30,7 +30,6 @@ pub fn log_filtered(reason: &str, pkt: &PacketInfo) {
 
 fn protocol_name(proto: Protocol) -> &'static str {
     match proto {
-        Protocol::Tcp => "TCP",
         Protocol::Udp => "UDP",
         Protocol::Any => "ANY",
     }
