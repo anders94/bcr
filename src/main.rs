@@ -50,6 +50,14 @@ struct Cli {
     #[arg(short = 'c', long)]
     config: Option<String>,
 
+    /// User to drop privileges to after creating sockets
+    #[arg(short = 'u', long, default_value = "nobody")]
+    user: String,
+
+    /// Do not drop privileges; run as root for the entire lifetime
+    #[arg(long)]
+    no_drop: bool,
+
     /// Verbose mode (show filtered packets)
     #[arg(short = 'v', long)]
     verbose: bool,
@@ -104,12 +112,53 @@ fn main() -> Result<()> {
     println!("  Input:   {}", cli.input.join(", "));
     println!("  Output:  {}", cli.output.join(", "));
     println!("  Config:  {}", cli.config.as_deref().unwrap_or("(none)"));
+    println!("  Drop to: {}", if cli.no_drop { "(disabled)" } else { &cli.user });
     println!("  Verbose: {}", cli.verbose);
     println!();
+
+    // Drop privileges now that the raw sockets exist. The relay loop only does
+    // read()/sendto() on already-open fds, which require no privileges. Dropping
+    // from root to a non-root uid also clears all process capabilities.
+    if cli.no_drop {
+        eprintln!("Warning: --no-drop set, running as root for the entire lifetime");
+    } else {
+        drop_privileges(&cli.user)?;
+    }
 
     // Run relay loop (blocks forever)
     relay.run()?;
 
+    Ok(())
+}
+
+/// Drop root privileges to an unprivileged user after sockets are created.
+///
+/// Order matters: supplementary groups, then gid, then uid. Once the uid is
+/// dropped, the gid can no longer be changed. After dropping we verify that
+/// root cannot be regained as defense in depth.
+fn drop_privileges(username: &str) -> Result<()> {
+    use nix::unistd::{seteuid, setgid, setgroups, setuid, Uid, User};
+
+    let user = User::from_name(username)
+        .with_context(|| format!("Failed to look up user '{}'", username))?
+        .ok_or_else(|| BcrError::Permission(format!("User '{}' does not exist", username)))?;
+
+    setgroups(&[user.gid]).context("Failed to drop supplementary groups")?;
+    setgid(user.gid).with_context(|| format!("Failed to setgid to {}", user.gid))?;
+    setuid(user.uid).with_context(|| format!("Failed to setuid to {}", user.uid))?;
+
+    // Confirm we cannot climb back to root.
+    if seteuid(Uid::from_raw(0)).is_ok() {
+        return Err(BcrError::Permission(
+            "privilege drop failed: process can still regain root".to_string(),
+        )
+        .into());
+    }
+
+    println!(
+        "Dropped privileges to '{}' (uid={}, gid={})",
+        username, user.uid, user.gid
+    );
     Ok(())
 }
 
