@@ -82,11 +82,16 @@ ACTION PROTO SRC_IP[:SRC_PORT] DST_IP[:DST_PORT] [NAT_OPTIONS]
 - **SRC_PORT**: Source port (`port`, `start-end`, or `any`)
 - **DST_IP**: Destination IP (`x.x.x.x`, `255.255.255.255`, `directed`, or `any`)
 - **DST_PORT**: Destination port (`port`, `start-end`, or `any`)
-- **NAT_OPTIONS** (optional):
+- **NAT_OPTIONS** (optional, `allow` rules only):
   - `snat=IP` - Rewrite source IP
   - `dnat=IP` - Rewrite destination IP
   - `sport=PORT` - Rewrite source port
   - `dport=PORT` - Rewrite destination port
+
+Config parsing is strict: a misspelled or unknown option (e.g. `snnat=`), an
+invalid value, an inverted port range, or NAT options on a `deny` rule cause
+bcr to refuse to start with a line-numbered error, rather than silently
+ignoring the token (which could leak an un-masqueraded source IP).
 
 ### Special Keywords
 

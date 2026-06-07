@@ -230,18 +230,42 @@ fn parse_rule(line: &str) -> Result<Rule> {
     let (src_ip, src_port) = parse_addr_port(parts[2])?;
     let (dst_ip, dst_port, broadcast_type) = parse_dest_addr_port(parts[3])?;
 
-    // Parse NAT options (remaining parts)
+    // Parse NAT options (remaining parts). Unknown or misspelled options are a
+    // hard error rather than silently ignored: e.g. a typo'd `snnat=10.0.0.1`
+    // would otherwise drop the SNAT and leak the real source IP onto the other
+    // segment while the operator believes it is being masqueraded.
     let mut nat = NatOptions::default();
     for opt in &parts[4..] {
         if let Some(val) = opt.strip_prefix("snat=") {
-            nat.source_ip = Some(Ipv4Addr::from_str(val)?);
+            nat.source_ip = Some(Ipv4Addr::from_str(val)
+                .with_context(|| format!("Invalid snat address: {}", val))?);
         } else if let Some(val) = opt.strip_prefix("dnat=") {
-            nat.dest_ip = Some(Ipv4Addr::from_str(val)?);
+            nat.dest_ip = Some(Ipv4Addr::from_str(val)
+                .with_context(|| format!("Invalid dnat address: {}", val))?);
         } else if let Some(val) = opt.strip_prefix("sport=") {
-            nat.source_port = Some(val.parse()?);
+            nat.source_port = Some(val.parse()
+                .with_context(|| format!("Invalid sport: {}", val))?);
         } else if let Some(val) = opt.strip_prefix("dport=") {
-            nat.dest_port = Some(val.parse()?);
+            nat.dest_port = Some(val.parse()
+                .with_context(|| format!("Invalid dport: {}", val))?);
+        } else {
+            return Err(anyhow!(
+                "Unknown option '{}' (expected snat=, dnat=, sport=, or dport=)",
+                opt
+            ));
         }
+    }
+
+    // NAT only applies to relayed (allowed) packets. NAT options on a deny rule
+    // do nothing, so accepting them silently would mislead the operator into
+    // thinking rewriting is in effect — reject the config instead.
+    if action == Action::Deny
+        && (nat.source_ip.is_some()
+            || nat.dest_ip.is_some()
+            || nat.source_port.is_some()
+            || nat.dest_port.is_some())
+    {
+        return Err(anyhow!("NAT options are not allowed on a deny rule"));
     }
 
     Ok(Rule {
@@ -276,8 +300,13 @@ fn parse_ip_matcher(s: &str) -> Result<IpMatcher> {
     if s.contains('/') {
         // CIDR notation
         let parts: Vec<&str> = s.split('/').collect();
-        let addr = Ipv4Addr::from_str(parts[0])?;
-        let prefix_len: u32 = parts[1].parse()?;
+        if parts.len() != 2 {
+            return Err(anyhow!("Invalid CIDR notation: {}", s));
+        }
+        let addr = Ipv4Addr::from_str(parts[0])
+            .with_context(|| format!("Invalid CIDR address: {}", parts[0]))?;
+        let prefix_len: u32 = parts[1].parse()
+            .with_context(|| format!("Invalid CIDR prefix length: {}", parts[1]))?;
 
         if prefix_len > 32 {
             return Err(anyhow!("Invalid CIDR prefix length: {}", prefix_len));
@@ -309,12 +338,21 @@ fn parse_port_matcher(s: &str) -> Result<PortMatcher> {
     if s.contains('-') {
         // Range
         let parts: Vec<&str> = s.split('-').collect();
-        let start: u16 = parts[0].parse()?;
-        let end: u16 = parts[1].parse()?;
+        if parts.len() != 2 {
+            return Err(anyhow!("Invalid port range: {}", s));
+        }
+        let start: u16 = parts[0].parse()
+            .with_context(|| format!("Invalid port range start: {}", parts[0]))?;
+        let end: u16 = parts[1].parse()
+            .with_context(|| format!("Invalid port range end: {}", parts[1]))?;
+        if start > end {
+            return Err(anyhow!("Invalid port range: start {} is greater than end {}", start, end));
+        }
         Ok(PortMatcher::Range(start..=end))
     } else {
         // Exact port
-        let port: u16 = s.parse()?;
+        let port: u16 = s.parse()
+            .with_context(|| format!("Invalid port: {}", s))?;
         Ok(PortMatcher::Exact(port))
     }
 }
@@ -370,6 +408,37 @@ mod tests {
         let config = Config::parse("allow udp 192.168.1.0/24:1900 255.255.255.255:1900 snat=10.0.0.1").unwrap();
         assert_eq!(config.rules.len(), 1);
         assert_eq!(config.rules[0].nat.source_ip, Some(Ipv4Addr::new(10, 0, 0, 1)));
+    }
+
+    #[test]
+    fn test_misspelled_nat_option_rejected() {
+        // A typo in a NAT option must fail loudly: silently dropping `snnat=`
+        // would relay the packet WITHOUT the intended SNAT, leaking the real
+        // source IP onto the other segment.
+        let result = Config::parse("allow udp 192.168.1.0/24:1900 255.255.255.255:1900 snnat=10.0.0.1");
+        let err = result.err().expect("misspelled nat option should be rejected");
+        assert!(err.to_string().contains("Unknown option"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_invalid_nat_value_rejected() {
+        let result = Config::parse("allow udp any:1900 255.255.255.255:1900 snat=not-an-ip");
+        let err = result.err().expect("invalid snat address should be rejected");
+        assert!(err.to_string().contains("Invalid snat address"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_nat_on_deny_rule_rejected() {
+        let result = Config::parse("deny udp any:any any:any snat=10.0.0.1");
+        let err = result.err().expect("nat on deny rule should be rejected");
+        assert!(err.to_string().contains("not allowed on a deny rule"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_inverted_port_range_rejected() {
+        let result = Config::parse("allow udp any:139-137 255.255.255.255:any");
+        let err = result.err().expect("inverted port range should be rejected");
+        assert!(err.to_string().contains("greater than end"), "got: {}", err);
     }
 
     #[test]
