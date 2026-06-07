@@ -7,12 +7,15 @@ use crate::filter::Filter;
 use crate::logging::{log_filtered, log_relay};
 use crate::nat::apply_nat;
 use crate::packet::{extract_packet_info, is_already_relayed};
+use crate::ratelimit::RateLimiter;
 use crate::socket::PacketSocket;
 
 pub struct Relay {
     pub input_sockets: Vec<PacketSocket>,
     pub output_sockets: Vec<PacketSocket>,
     pub filter: Filter,
+    /// Optional ceiling on accepted packets/sec (None = unlimited).
+    pub rate_limiter: Option<RateLimiter>,
     pub verbose: bool,
 }
 
@@ -75,10 +78,21 @@ impl Relay {
                     continue;
                 }
 
-                // 4. Get NAT options (already matched, cheap lookup)
+                // 4. Rate limit accepted packets (caps storm amplification:
+                //    one accepted packet fans out to every output interface).
+                if let Some(rl) = self.rate_limiter.as_mut() {
+                    if !rl.allow() {
+                        if self.verbose {
+                            log_filtered("rate limit", &pkt_info);
+                        }
+                        continue;
+                    }
+                }
+
+                // 5. Get NAT options (already matched, cheap lookup)
                 let nat_rule = self.filter.get_nat_rule(&pkt_info).unwrap();
 
-                // 5. Relay to all output interfaces
+                // 6. Relay to all output interfaces
                 for out_sock in &self.output_sockets {
                     // Multicast and limited broadcast go to all interfaces.
                     // Directed broadcasts only go to the interface whose subnet matches.
