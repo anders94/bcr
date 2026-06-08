@@ -94,12 +94,12 @@ impl Relay {
 
                 // 6. Relay to all output interfaces
                 for out_sock in &self.output_sockets {
-                    // Multicast and limited broadcast go to all interfaces.
-                    // Directed broadcasts only go to the interface whose subnet matches.
-                    if !pkt_info.dst_ip.is_multicast()
-                        && pkt_info.dst_ip != std::net::Ipv4Addr::new(255, 255, 255, 255)
-                        && pkt_info.dst_ip != out_sock.broadcast_addr
-                    {
+                    if !should_relay_to(
+                        pkt_info.dst_ip,
+                        &in_sock.ifname,
+                        &out_sock.ifname,
+                        out_sock.broadcast_addr,
+                    ) {
                         continue;
                     }
 
@@ -136,5 +136,72 @@ impl Relay {
                 // HOTPATH ENDS HERE
             }
         }
+    }
+}
+
+/// Decide whether a packet with destination `dst`, received on `ingress_if`,
+/// should be relayed out the interface `out_if` (whose broadcast address is
+/// `out_broadcast`).
+///
+/// The relay never echoes a packet back out the interface it arrived on. That
+/// prevents a single bcr instance from relaying its own output into itself
+/// (the loop the TTL/IP-id marker only papers over after the fact), and it
+/// makes bidirectional configs like `-i a -i b -o a -o b` correct: a packet
+/// from `a` goes only to `b`, not back onto `a`.
+///
+/// Otherwise: multicast and limited broadcast (255.255.255.255) go to every
+/// (other) interface; a directed broadcast goes only to the interface whose
+/// subnet broadcast address it matches.
+#[inline(always)]
+fn should_relay_to(
+    dst: std::net::Ipv4Addr,
+    ingress_if: &str,
+    out_if: &str,
+    out_broadcast: std::net::Ipv4Addr,
+) -> bool {
+    if ingress_if == out_if {
+        return false;
+    }
+    dst.is_multicast()
+        || dst == std::net::Ipv4Addr::new(255, 255, 255, 255)
+        || dst == out_broadcast
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_relay_to;
+    use std::net::Ipv4Addr;
+
+    const BCAST_A: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 255);
+    const LIMITED: Ipv4Addr = Ipv4Addr::new(255, 255, 255, 255);
+    const MCAST: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+
+    #[test]
+    fn never_echoes_back_to_ingress_interface() {
+        // Even a limited broadcast must not be sent back out the ingress iface.
+        assert!(!should_relay_to(LIMITED, "eth0", "eth0", BCAST_A));
+        assert!(!should_relay_to(MCAST, "eth0", "eth0", BCAST_A));
+        assert!(!should_relay_to(BCAST_A, "eth0", "eth0", BCAST_A));
+    }
+
+    #[test]
+    fn relays_broadcast_and_multicast_to_other_interfaces() {
+        assert!(should_relay_to(LIMITED, "eth0", "eth1", BCAST_A));
+        assert!(should_relay_to(MCAST, "eth0", "eth1", BCAST_A));
+    }
+
+    #[test]
+    fn directed_broadcast_only_to_matching_subnet() {
+        // Goes to the interface whose subnet broadcast it matches...
+        assert!(should_relay_to(BCAST_A, "eth0", "eth1", BCAST_A));
+        // ...but not to an interface on a different subnet.
+        assert!(!should_relay_to(BCAST_A, "eth0", "eth2", Ipv4Addr::new(10, 0, 0, 255)));
+    }
+
+    #[test]
+    fn bidirectional_config_does_not_loop() {
+        // `-i eth0 -i eth1 -o eth0 -o eth1`: a packet from eth0 reaches eth1 only.
+        assert!(!should_relay_to(LIMITED, "eth0", "eth0", BCAST_A));
+        assert!(should_relay_to(LIMITED, "eth0", "eth1", BCAST_A));
     }
 }
