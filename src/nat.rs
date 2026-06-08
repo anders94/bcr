@@ -4,9 +4,17 @@ use pnet::packet::udp::MutableUdpPacket;
 use std::net::Ipv4Addr;
 
 use crate::config::NatOptions;
+use crate::packet::validate_ipv4_header;
 
 /// Apply NAT rewriting to packet buffer (in-place modification)
 pub fn apply_nat(buf: &mut [u8], nat: &NatOptions, dest_broadcast: Ipv4Addr) -> Result<()> {
+    // Re-validate the header before any IHL-driven slicing. The relay path only
+    // calls this on buffers that already passed extract_packet_info, but keeping
+    // apply_nat self-defending means a malformed header yields a clean Err
+    // instead of an out-of-bounds panic (which would abort under panic=abort).
+    let ip_header_len = validate_ipv4_header(buf)
+        .ok_or_else(|| anyhow!("Malformed IPv4 header"))?;
+
     let mut ip_pkt = MutableIpv4Packet::new(buf)
         .ok_or_else(|| anyhow!("Invalid IP packet"))?;
 
@@ -24,9 +32,9 @@ pub fn apply_nat(buf: &mut [u8], nat: &NatOptions, dest_broadcast: Ipv4Addr) -> 
     // Set TTL=1 for loop prevention (like bcrelay.c)
     ip_pkt.set_ttl(1);
 
-    // Get protocol before modifying transport layer
+    // Get protocol before modifying transport layer (ip_header_len was already
+    // validated above against the buffer length).
     let protocol = ip_pkt.get_next_level_protocol();
-    let ip_header_len = ip_pkt.get_header_length() as usize * 4;
 
     // Apply transport-layer NAT and update checksums.
     // Only UDP is ever relayed (see Protocol), so UDP is the only case here.
