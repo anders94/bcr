@@ -411,6 +411,16 @@ mod tests {
     }
 
     #[test]
+    fn example_configs_parse() {
+        // The shipped example configs must remain valid under the strict parser.
+        for name in ["examples/sample.conf", "examples/test.conf"] {
+            let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), name);
+            Config::from_file(&path)
+                .unwrap_or_else(|e| panic!("{} failed to parse: {}", name, e));
+        }
+    }
+
+    #[test]
     fn test_misspelled_nat_option_rejected() {
         // A typo in a NAT option must fail loudly: silently dropping `snnat=`
         // would relay the packet WITHOUT the intended SNAT, leaking the real
