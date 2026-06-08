@@ -10,8 +10,10 @@ pub struct PacketSocket {
     fd: OwnedFd,
     ifindex: i32,
     pub ifname: String,
-    /// Broadcast address of the interface (used as relay destination)
-    pub broadcast_addr: Ipv4Addr,
+    /// All IPv4 broadcast addresses of the interface (one per configured
+    /// subnet/alias). Used both to decide whether a directed broadcast belongs
+    /// to this interface and as the rewrite target when relaying.
+    pub broadcast_addrs: Vec<Ipv4Addr>,
 }
 
 #[cfg(target_os = "linux")]
@@ -60,13 +62,17 @@ impl PacketSocket {
             mr_address: [0; 8],
         };
         unsafe {
-            libc::setsockopt(
+            nix::errno::Errno::result(libc::setsockopt(
                 fd.as_raw_fd(),
                 libc::SOL_PACKET,
                 libc::PACKET_ADD_MEMBERSHIP,
                 &mreq as *const _ as *const libc::c_void,
                 std::mem::size_of::<libc::packet_mreq>() as libc::socklen_t,
-            );
+            ))
+            .context(format!(
+                "Failed to enable all-multicast membership on interface '{}'",
+                ifname
+            ))?;
         }
 
         // Attach a kernel BPF filter so the socket only wakes userspace for
@@ -78,25 +84,29 @@ impl PacketSocket {
         attach_packet_filter(fd.as_raw_fd())
             .context(format!("Failed to attach BPF filter on interface '{}'", ifname))?;
 
-        // Look up the interface's broadcast address via getifaddrs
-        let broadcast_addr = nix::ifaddrs::getifaddrs()
-            .ok()
-            .and_then(|addrs| {
-                addrs
-                    .filter(|a| a.interface_name == ifname)
-                    .find_map(|a| {
-                        a.broadcast.and_then(|b| {
-                            b.as_sockaddr_in().map(|s| s.ip())
-                        })
-                    })
-            })
-            .unwrap_or(Ipv4Addr::new(255, 255, 255, 255));
+        // Look up ALL of the interface's IPv4 broadcast addresses via
+        // getifaddrs. An interface can carry several subnets/aliases, each with
+        // its own broadcast address; capturing only the first would silently
+        // refuse to relay directed broadcasts for the others.
+        let mut broadcast_addrs: Vec<Ipv4Addr> = Vec::new();
+        if let Ok(addrs) = nix::ifaddrs::getifaddrs() {
+            for a in addrs.filter(|a| a.interface_name == ifname) {
+                if let Some(bcast) = a.broadcast.and_then(|b| b.as_sockaddr_in().map(|s| s.ip())) {
+                    if !broadcast_addrs.contains(&bcast) {
+                        broadcast_addrs.push(bcast);
+                    }
+                }
+            }
+        }
+        if broadcast_addrs.is_empty() {
+            broadcast_addrs.push(Ipv4Addr::new(255, 255, 255, 255));
+        }
 
         Ok(PacketSocket {
             fd,
             ifindex: ifindex as i32,
             ifname: ifname.to_string(),
-            broadcast_addr,
+            broadcast_addrs,
         })
     }
 
@@ -167,13 +177,37 @@ fn attach_packet_filter(fd: std::os::unix::io::RawFd) -> Result<()> {
     Ok(())
 }
 
+/// Compute the Ethernet destination MAC (padded to the 8-byte sll_addr field)
+/// for an outgoing IPv4 packet, based on its destination address at the fixed
+/// offset 16..20 of the IPv4 header.
+///
+/// IPv4 multicast (224.0.0.0/4) maps to `01:00:5e` followed by the low 23 bits
+/// of the group address (RFC 1112). Everything else — limited and directed
+/// broadcasts — uses the all-ones broadcast MAC. Sending multicast to the
+/// broadcast MAC (as the code previously did) forces every NIC on the segment
+/// to take an interrupt and the host stack to process the frame, instead of
+/// letting hardware multicast filtering drop it for uninterested hosts.
+#[inline(always)]
+fn dest_mac(data: &[u8]) -> [u8; 8] {
+    if data.len() >= 20 {
+        let d = [data[16], data[17], data[18], data[19]];
+        if (224..=239).contains(&d[0]) {
+            return [0x01, 0x00, 0x5e, d[1] & 0x7f, d[2], d[3], 0, 0];
+        }
+    }
+    [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0]
+}
+
 impl PacketSocket {
     /// Receive packet (zero-copy into provided buffer)
     pub fn recv(&self, buf: &mut [u8]) -> nix::Result<usize> {
         nix::unistd::read(&self.fd, buf)
     }
 
-    /// Send packet to broadcast address on the bound interface
+    /// Send packet on the bound interface. The destination MAC is derived from
+    /// the IPv4 destination address: a multicast group maps to its 01:00:5e
+    /// multicast MAC, everything else (limited/directed broadcast) goes to the
+    /// broadcast MAC.
     pub fn send(&self, data: &[u8]) -> nix::Result<usize> {
         let sll = libc::sockaddr_ll {
             sll_family: libc::AF_PACKET as u16,
@@ -182,7 +216,7 @@ impl PacketSocket {
             sll_hatype: 0,
             sll_pkttype: 0,
             sll_halen: 6,
-            sll_addr: [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0], // Broadcast MAC
+            sll_addr: dest_mac(data),
         };
         unsafe {
             let sa = &sll as *const libc::sockaddr_ll as *const libc::sockaddr;
@@ -212,3 +246,44 @@ impl PacketSocket {
 }
 
 // OwnedFd automatically closes the file descriptor when dropped, so we don't need Drop impl
+
+#[cfg(test)]
+mod tests {
+    use super::dest_mac;
+
+    /// Build a 20-byte IPv4 header carrying the given destination address.
+    fn pkt_with_dst(dst: [u8; 4]) -> Vec<u8> {
+        let mut buf = vec![0u8; 20];
+        buf[16..20].copy_from_slice(&dst);
+        buf
+    }
+
+    #[test]
+    fn multicast_maps_to_01005e_mac() {
+        // 224.0.0.251 (mDNS) -> 01:00:5e:00:00:fb
+        assert_eq!(
+            dest_mac(&pkt_with_dst([224, 0, 0, 251])),
+            [0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb, 0, 0]
+        );
+        // 239.255.255.250 (SSDP): high bit of the second octet is masked off.
+        assert_eq!(
+            dest_mac(&pkt_with_dst([239, 255, 255, 250])),
+            [0x01, 0x00, 0x5e, 0x7f, 0xff, 0xfa, 0, 0]
+        );
+    }
+
+    #[test]
+    fn broadcast_uses_all_ones_mac() {
+        let bcast = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0];
+        assert_eq!(dest_mac(&pkt_with_dst([255, 255, 255, 255])), bcast); // limited
+        assert_eq!(dest_mac(&pkt_with_dst([192, 168, 1, 255])), bcast); // directed
+    }
+
+    #[test]
+    fn short_buffer_falls_back_to_broadcast() {
+        assert_eq!(
+            dest_mac(&[0u8; 10]),
+            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0]
+        );
+    }
+}

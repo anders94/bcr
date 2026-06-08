@@ -22,9 +22,12 @@ pub struct Relay {
 impl Relay {
     /// Main relay loop - CRITICAL HOTPATH
     pub fn run(&mut self) -> Result<()> {
-        // Pre-allocate buffers (avoid allocation in loop)
-        let mut recv_buf = vec![0u8; 2048]; // Max packet size
-        let mut send_buf = vec![0u8; 2048];
+        // Pre-allocate buffers (avoid allocation in loop). Sized to the maximum
+        // possible IPv4 datagram so a packet is never truncated on recv — a
+        // truncated packet would have its checksums recomputed over partial
+        // data and be relayed corrupt.
+        let mut recv_buf = vec![0u8; 65536];
+        let mut send_buf = vec![0u8; 65536];
 
         loop {
             // Build fd_set for select() across all input sockets
@@ -98,7 +101,7 @@ impl Relay {
                         pkt_info.dst_ip,
                         &in_sock.ifname,
                         &out_sock.ifname,
-                        out_sock.broadcast_addr,
+                        &out_sock.broadcast_addrs,
                     ) {
                         continue;
                     }
@@ -106,12 +109,18 @@ impl Relay {
                     // Copy to send buffer (avoid modifying recv buffer)
                     send_buf[..len].copy_from_slice(&recv_buf[..len]);
 
+                    // Choose the broadcast address to rewrite the destination
+                    // to: if this is a directed broadcast that already matches
+                    // one of the interface's subnets, keep it; otherwise (a
+                    // limited broadcast) use the interface's primary broadcast.
+                    let dest_broadcast = nat_rewrite_target(pkt_info.dst_ip, &out_sock.broadcast_addrs);
+
                     // Apply NAT in-place, rewriting destination to the output
                     // interface's broadcast address (matching bcrelay.c behaviour)
                     if let Err(e) = apply_nat(
                         &mut send_buf[..len],
                         &nat_rule.nat,
-                        out_sock.broadcast_addr,
+                        dest_broadcast,
                     ) {
                         if self.verbose {
                             eprintln!("NAT error: {}", e);
@@ -150,26 +159,45 @@ impl Relay {
 /// from `a` goes only to `b`, not back onto `a`.
 ///
 /// Otherwise: multicast and limited broadcast (255.255.255.255) go to every
-/// (other) interface; a directed broadcast goes only to the interface whose
-/// subnet broadcast address it matches.
+/// (other) interface; a directed broadcast goes only to an interface that owns
+/// the matching subnet broadcast address (an interface may have several).
 #[inline(always)]
 fn should_relay_to(
     dst: std::net::Ipv4Addr,
     ingress_if: &str,
     out_if: &str,
-    out_broadcast: std::net::Ipv4Addr,
+    out_broadcasts: &[std::net::Ipv4Addr],
 ) -> bool {
     if ingress_if == out_if {
         return false;
     }
     dst.is_multicast()
         || dst == std::net::Ipv4Addr::new(255, 255, 255, 255)
-        || dst == out_broadcast
+        || out_broadcasts.contains(&dst)
+}
+
+/// The destination address apply_nat should rewrite a relayed packet to for a
+/// given output interface. A directed broadcast that already matches one of the
+/// interface's subnets is kept as-is; otherwise (a limited broadcast) the
+/// interface's primary broadcast address is used.
+#[inline(always)]
+fn nat_rewrite_target(
+    dst: std::net::Ipv4Addr,
+    out_broadcasts: &[std::net::Ipv4Addr],
+) -> std::net::Ipv4Addr {
+    if out_broadcasts.contains(&dst) {
+        dst
+    } else {
+        out_broadcasts
+            .first()
+            .copied()
+            .unwrap_or(std::net::Ipv4Addr::new(255, 255, 255, 255))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::should_relay_to;
+    use super::{nat_rewrite_target, should_relay_to};
     use std::net::Ipv4Addr;
 
     const BCAST_A: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 255);
@@ -179,29 +207,48 @@ mod tests {
     #[test]
     fn never_echoes_back_to_ingress_interface() {
         // Even a limited broadcast must not be sent back out the ingress iface.
-        assert!(!should_relay_to(LIMITED, "eth0", "eth0", BCAST_A));
-        assert!(!should_relay_to(MCAST, "eth0", "eth0", BCAST_A));
-        assert!(!should_relay_to(BCAST_A, "eth0", "eth0", BCAST_A));
+        assert!(!should_relay_to(LIMITED, "eth0", "eth0", &[BCAST_A]));
+        assert!(!should_relay_to(MCAST, "eth0", "eth0", &[BCAST_A]));
+        assert!(!should_relay_to(BCAST_A, "eth0", "eth0", &[BCAST_A]));
     }
 
     #[test]
     fn relays_broadcast_and_multicast_to_other_interfaces() {
-        assert!(should_relay_to(LIMITED, "eth0", "eth1", BCAST_A));
-        assert!(should_relay_to(MCAST, "eth0", "eth1", BCAST_A));
+        assert!(should_relay_to(LIMITED, "eth0", "eth1", &[BCAST_A]));
+        assert!(should_relay_to(MCAST, "eth0", "eth1", &[BCAST_A]));
     }
 
     #[test]
     fn directed_broadcast_only_to_matching_subnet() {
         // Goes to the interface whose subnet broadcast it matches...
-        assert!(should_relay_to(BCAST_A, "eth0", "eth1", BCAST_A));
+        assert!(should_relay_to(BCAST_A, "eth0", "eth1", &[BCAST_A]));
         // ...but not to an interface on a different subnet.
-        assert!(!should_relay_to(BCAST_A, "eth0", "eth2", Ipv4Addr::new(10, 0, 0, 255)));
+        assert!(!should_relay_to(BCAST_A, "eth0", "eth2", &[Ipv4Addr::new(10, 0, 0, 255)]));
+    }
+
+    #[test]
+    fn directed_broadcast_matches_any_subnet_on_multihomed_iface() {
+        // An interface carrying two subnets must relay directed broadcasts for
+        // either, not just the first.
+        let bcasts = [Ipv4Addr::new(10, 0, 0, 255), Ipv4Addr::new(172, 16, 0, 255)];
+        assert!(should_relay_to(Ipv4Addr::new(10, 0, 0, 255), "eth0", "eth1", &bcasts));
+        assert!(should_relay_to(Ipv4Addr::new(172, 16, 0, 255), "eth0", "eth1", &bcasts));
+        assert!(!should_relay_to(Ipv4Addr::new(192, 168, 0, 255), "eth0", "eth1", &bcasts));
     }
 
     #[test]
     fn bidirectional_config_does_not_loop() {
         // `-i eth0 -i eth1 -o eth0 -o eth1`: a packet from eth0 reaches eth1 only.
-        assert!(!should_relay_to(LIMITED, "eth0", "eth0", BCAST_A));
-        assert!(should_relay_to(LIMITED, "eth0", "eth1", BCAST_A));
+        assert!(!should_relay_to(LIMITED, "eth0", "eth0", &[BCAST_A]));
+        assert!(should_relay_to(LIMITED, "eth0", "eth1", &[BCAST_A]));
+    }
+
+    #[test]
+    fn nat_target_keeps_matching_directed_broadcast() {
+        let bcasts = [Ipv4Addr::new(10, 0, 0, 255), Ipv4Addr::new(172, 16, 0, 255)];
+        // A directed broadcast that matches a subnet is preserved...
+        assert_eq!(nat_rewrite_target(Ipv4Addr::new(172, 16, 0, 255), &bcasts), Ipv4Addr::new(172, 16, 0, 255));
+        // ...a limited broadcast is rewritten to the primary (first) broadcast.
+        assert_eq!(nat_rewrite_target(LIMITED, &bcasts), Ipv4Addr::new(10, 0, 0, 255));
     }
 }

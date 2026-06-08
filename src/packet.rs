@@ -42,6 +42,15 @@ pub fn extract_packet_info(buf: &[u8]) -> Option<PacketInfo> {
 
     let ip_packet = Ipv4Packet::new(buf)?;
 
+    // Reject a packet that claims more bytes than we actually captured. This
+    // catches a truncated datagram (its checksums would be recomputed over
+    // partial data and relayed corrupt) and a header lying about its length.
+    // total_length < 20 is also invalid (must cover at least the IP header).
+    let total_length = ip_packet.get_total_length() as usize;
+    if total_length < 20 || total_length > buf.len() {
+        return None;
+    }
+
     // Check if broadcast (any host bits set to 1)
     let dst_ip = ip_packet.get_destination();
     if !is_broadcast(dst_ip) {
@@ -205,6 +214,15 @@ mod tests {
         let info = extract_packet_info(&valid).expect("valid packet should parse");
         assert_eq!(info.src_ip, Ipv4Addr::new(192, 168, 1, 50));
         assert_eq!(info.dst_ip, Ipv4Addr::new(224, 0, 0, 251));
+    }
+
+    #[test]
+    fn test_rejects_truncated_packet() {
+        // A valid 28-byte datagram parses; the same packet truncated below its
+        // declared total_length must be rejected rather than relayed corrupt.
+        let valid = build_udp(Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(255, 255, 255, 255));
+        assert!(extract_packet_info(&valid).is_some());
+        assert!(extract_packet_info(&valid[..valid.len() - 1]).is_none());
     }
 
     #[test]
