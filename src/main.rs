@@ -222,6 +222,20 @@ fn validate_startup(config: &Config, input_ifs: &[String], output_ifs: &[String]
         eprintln!("Warning: Configuration has no allow rules, no packets will be relayed");
     }
 
+    // bcr never echoes a packet back out its ingress interface, so an input
+    // interface whose only outputs are itself can never relay anything. Warn
+    // about that degenerate config rather than silently dropping its traffic.
+    for in_if in input_ifs {
+        if !output_ifs.iter().any(|o| o != in_if) {
+            eprintln!(
+                "Warning: input interface '{}' has no distinct output interface; \
+                 packets received on it will not be relayed (bcr never echoes a \
+                 packet back out its ingress interface)",
+                in_if
+            );
+        }
+    }
+
     Ok(())
 }
 

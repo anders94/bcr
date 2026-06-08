@@ -126,9 +126,10 @@ deny any any:any any:any  # Default deny
 
 To prevent infinite relay loops:
 
-1. **On relay**: Set TTL=1 AND the IP Identification field to `RELAY_MARKER_IP_ID` (0xBCBC) on relayed packets
-2. **On receive**: Reject packets with TTL=1 AND Identification == 0xBCBC (`is_already_relayed`)
-3. This marks relayed packets so they're not relayed again
+1. **Never echo to ingress**: A packet is never relayed back out the interface it arrived on (`should_relay_to` in relay.rs). This is the primary, non-spoofable guard and makes bidirectional configs (`-i a -i b -o a -o b`) correct.
+2. **On relay**: Set TTL=1 AND the IP Identification field to `RELAY_MARKER_IP_ID` (0xBCBC) on relayed packets
+3. **On receive**: Reject packets with TTL=1 AND Identification == 0xBCBC (`is_already_relayed`) — catches loops between *separate* bcr instances on a shared segment
+4. This marks relayed packets so they're not relayed again
 
 Note: bcrelay.c marked packets with TTL=1 + a zeroed UDP checksum. We moved the
 marker to the IP Identification field because a zero UDP checksum is a legal,

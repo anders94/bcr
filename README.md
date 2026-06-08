@@ -134,7 +134,13 @@ BCR uses Linux AF_PACKET raw sockets to capture broadcast packets on the input i
 
 ### Loop Prevention
 
-To prevent infinite relay loops, BCR marks relayed packets by:
+First, BCR never relays a packet back out the interface it arrived on, so a
+single instance cannot loop into itself (and bidirectional setups like
+`-i eth0 -i eth1 -o eth0 -o eth1` work correctly — traffic from each interface
+goes only to the other).
+
+To additionally catch loops between separate BCR instances sharing a segment,
+BCR marks relayed packets by:
 - Setting TTL to 1
 - Setting the IP Identification field to a magic value (`0xBCBC`)
 
