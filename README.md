@@ -125,7 +125,7 @@ See `examples/sample.conf` for a complete example.
 BCR uses Linux AF_PACKET raw sockets to capture broadcast packets on the input interface and forward them to output interfaces. The relay process:
 
 1. Receives packet on input interface
-2. Checks for relay loops (rejects packets with TTL=1 and UDP checksum=0)
+2. Checks for relay loops (rejects packets with TTL=1 and the magic IP Identification marker)
 3. Extracts packet headers (IP, UDP)
 4. Matches against configuration rules (first match wins)
 5. If allowed, applies NAT transformations (if configured)
@@ -136,9 +136,17 @@ BCR uses Linux AF_PACKET raw sockets to capture broadcast packets on the input i
 
 To prevent infinite relay loops, BCR marks relayed packets by:
 - Setting TTL to 1
-- Setting UDP checksum to 0
+- Setting the IP Identification field to a magic value (`0xBCBC`)
 
-Any packet received with these markers is rejected as already relayed.
+Any packet received with **both** markers is rejected as already relayed.
+
+Earlier versions (and the original bcrelay.c) used a zeroed UDP checksum as the
+second marker. That was changed because a zero UDP checksum is a legal, common
+value — it caused legitimate traffic to be dropped — and zeroing it destroyed
+the packet's integrity protection. BCR now recomputes a **valid** UDP checksum
+on every relayed packet. Note that a header-based marker is inherently
+spoofable; it defends against accidental loops, not a determined on-segment
+attacker.
 
 ## Performance
 
@@ -203,7 +211,7 @@ BCR modernizes the original bcrelay from pptpd:
 
 ### Kept from bcrelay:
 - AF_PACKET socket approach for performance
-- Loop prevention mechanism (TTL=1, checksum=0)
+- TTL=1 loop-prevention marker (second signal modernized to a magic IP Identification value, preserving UDP integrity)
 - Interface binding pattern
 - select() multiplexing
 
