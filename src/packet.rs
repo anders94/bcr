@@ -86,11 +86,30 @@ pub fn is_broadcast(ip: Ipv4Addr) -> bool {
     ip == Ipv4Addr::new(255, 255, 255, 255) || octets[3] == 255 || ip.is_multicast()
 }
 
-/// Loop prevention check (mirrors bcrelay.c logic)
-/// Packets we've already relayed have TTL=1 and UDP checksum=0
+/// Magic value written into the IPv4 Identification field of relayed packets,
+/// combined with TTL=1, to mark them as "already relayed" for loop prevention.
+///
+/// The original bcrelay.c marked relayed packets with TTL=1 AND a zeroed UDP
+/// checksum. That has two problems: a zero UDP checksum is a legal, common
+/// value in IPv4 (so legitimate traffic was misidentified as relayed and
+/// dropped), and zeroing it destroyed the packet's L4 integrity protection.
+/// We instead mark with TTL=1 AND this magic Identification value: receivers
+/// ignore the Identification field for non-fragmented datagrams, so it is a
+/// free signal, and requiring both fields to match makes a collision with
+/// real traffic ~1/65536 even among TTL=1 packets. This lets the relay keep a
+/// valid UDP checksum (see nat::apply_nat).
+///
+/// Note: like any header-based marker this is spoofable — an on-segment
+/// attacker can forge it to suppress relaying of their own traffic, which is
+/// not a meaningful attack. Robust anti-spoof loop prevention would require an
+/// input!=output guard and/or per-packet dedup state (tracked separately).
+pub const RELAY_MARKER_IP_ID: u16 = 0xBCBC;
+
+/// Loop prevention check: a packet we previously relayed carries TTL=1 and our
+/// magic IP Identification value (see RELAY_MARKER_IP_ID).
 #[inline(always)]
 pub fn is_already_relayed(buf: &[u8]) -> bool {
-    // Reject malformed headers before touching IHL-driven payload slicing.
+    // Reject malformed headers before touching any header accessors.
     if validate_ipv4_header(buf).is_none() {
         return false;
     }
@@ -100,22 +119,7 @@ pub fn is_already_relayed(buf: &[u8]) -> bool {
         None => return false,
     };
 
-    // TTL must be 1 (our marker)
-    if ip_packet.get_ttl() != 1 {
-        return false;
-    }
-
-    // Check UDP checksum == 0 (our marker)
-    if ip_packet.get_next_level_protocol() == pnet::packet::ip::IpNextHeaderProtocols::Udp {
-        let udp = match UdpPacket::new(ip_packet.payload()) {
-            Some(u) => u,
-            None => return false,
-        };
-
-        return udp.get_checksum() == 0;
-    }
-
-    false
+    ip_packet.get_ttl() == 1 && ip_packet.get_identification() == RELAY_MARKER_IP_ID
 }
 
 #[cfg(test)]

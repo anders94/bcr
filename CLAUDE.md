@@ -84,7 +84,7 @@ The relay loop in `relay.rs` is the most performance-critical code:
 ```
 1. select() wait for packet on input socket
 2. recv() into pre-allocated buffer
-3. Loop prevention check (TTL=1 && UDP checksum=0)
+3. Loop prevention check (TTL=1 && IP Identification == 0xBCBC)
 4. Extract packet info (stack-allocated struct)
 5. Sequential rule matching (first match wins)
 6. Rate-limit check (token bucket; drop if over budget)
@@ -124,11 +124,18 @@ deny any any:any any:any  # Default deny
 
 ### Loop Prevention
 
-To prevent infinite relay loops (matching bcrelay.c behavior):
+To prevent infinite relay loops:
 
-1. **On relay**: Set TTL=1 and UDP checksum=0 on relayed packets
-2. **On receive**: Reject packets with TTL=1 AND UDP checksum=0
+1. **On relay**: Set TTL=1 AND the IP Identification field to `RELAY_MARKER_IP_ID` (0xBCBC) on relayed packets
+2. **On receive**: Reject packets with TTL=1 AND Identification == 0xBCBC (`is_already_relayed`)
 3. This marks relayed packets so they're not relayed again
+
+Note: bcrelay.c marked packets with TTL=1 + a zeroed UDP checksum. We moved the
+marker to the IP Identification field because a zero UDP checksum is a legal,
+common value (the old marker dropped legitimate traffic) and zeroing it
+destroyed L4 integrity. The relay now recomputes a **valid** UDP checksum.
+A header-based marker is still spoofable — robust anti-spoof loop prevention
+(input!=output guard, per-packet dedup) is tracked as future work.
 
 ### Data Structure Patterns
 
@@ -187,7 +194,7 @@ struct PacketInfo {
 
 - Always recalculate checksums after any header modification
 - IP checksum: After IP header changes
-- UDP checksum: Can be zero (we use this for loop prevention)
+- UDP checksum: Recompute a valid checksum (the dest IP in the pseudo-header always changes on relay). Do NOT zero it — the loop marker lives in the IP Identification field, not the checksum
 - Only UDP is relayed; TCP has no broadcast semantics and is rejected at config parse time
 - Use pnet checksum utilities (don't hand-roll)
 
@@ -249,7 +256,7 @@ sudo perf report
 
 1. **Deny by default**: Only explicitly allowed traffic is relayed
 2. **No code execution**: Config file is pure data (no eval/embedded scripts)
-3. **Loop prevention**: TTL and checksum markers prevent relay loops
+3. **Loop prevention**: TTL=1 + magic IP Identification marker prevents relay loops
 4. **Input validation**: All config fields validated at parse time
 5. **Graceful degradation**: Malformed packets logged but don't crash relay
 
@@ -257,7 +264,7 @@ sudo perf report
 
 **Kept from bcrelay.c**:
 - AF_PACKET socket approach (PF_PACKET + SOCK_DGRAM)
-- Loop prevention mechanism (TTL=1, checksum=0)
+- TTL=1 loop-prevention marker (but the second signal is now a magic IP Identification value, not a zeroed UDP checksum — preserves L4 integrity)
 - Interface binding and discovery pattern
 - select() multiplexing
 
