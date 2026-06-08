@@ -112,49 +112,66 @@ impl PacketSocket {
 
 }
 
-/// Attach a classic-BPF filter to an AF_PACKET socket that accepts only
-/// IPv4/UDP frames sent to a multicast or broadcast MAC. For PF_PACKET sockets
-/// the filter runs on the full link-layer frame (including the 14-byte Ethernet
-/// header) regardless of SOCK_DGRAM, so offsets are measured from the Ethernet
-/// destination MAC at byte 0.
+/// Attach a classic-BPF filter to an AF_PACKET SOCK_DGRAM socket that accepts
+/// only IPv4/UDP packets whose destination is a multicast or broadcast address.
 ///
-/// Program (matches `tcpdump -y EN10MB -dd 'multicast and ip and udp'`):
-///   ldb  [0]            ; first octet of dest MAC
-///   jset #1 -> next else reject   ; multicast/broadcast bit (broadcast is all-ones)
-///   ldh  [12]           ; EtherType
-///   jeq  #0x0800 -> next else reject   ; IPv4
-///   ldb  [23]           ; IP protocol (Ethernet 14 + IP header byte 9)
-///   jeq  #17 -> accept else reject     ; UDP
-///   accept: ret #262144 ; pass whole packet
-///   reject: ret #0
+/// For SOCK_DGRAM PF_PACKET sockets the kernel runs the filter after
+/// eth_type_trans has pulled `skb->data` past the Ethernet header (`packet_rcv`
+/// in `net/packet/af_packet.c` only re-pushes for SOCK_RAW), so offsets are
+/// measured from the start of the L3 (IPv4) header — not the L2 frame. An
+/// earlier version of this filter assumed offsets-from-L2 and silently dropped
+/// every packet because byte 12 of an IPv4 header is part of the source
+/// address, not the EtherType.
+///
+/// Program:
+///   0:  A = ip[0]                       ; version<<4 | IHL
+///   1:  A &= 0xf0
+///   2:  jeq #0x40  -> next else reject  ; IPv4 only
+///   3:  A = ip[9]                       ; protocol
+///   4:  jeq #17    -> next else reject  ; UDP only
+///   5:  A = ip[16]                      ; first octet of dest address
+///   6:  A &= 0xf0
+///   7:  jeq #0xe0  -> accept            ; multicast 224.0.0.0/4
+///   8:  A = ip[19]                      ; last octet of dest address
+///   9:  jeq #0xff  -> accept else reject; limited or directed broadcast
+///   10: accept: ret #262144
+///   11: reject: ret #0
 #[cfg(target_os = "linux")]
 fn attach_packet_filter(fd: std::os::unix::io::RawFd) -> Result<()> {
     const BPF_LD: u16 = 0x00;
     const BPF_B: u16 = 0x10;
-    const BPF_H: u16 = 0x08;
     const BPF_ABS: u16 = 0x20;
     const BPF_K: u16 = 0x00;
+    const BPF_ALU: u16 = 0x04;
+    const BPF_AND: u16 = 0x50;
     const BPF_JMP: u16 = 0x05;
     const BPF_JEQ: u16 = 0x10;
-    const BPF_JSET: u16 = 0x40;
     const BPF_RET: u16 = 0x06;
 
     let prog = [
-        // 0: A = ether[0]
+        // 0: A = ip[0] (version+IHL)
         libc::sock_filter { code: BPF_LD | BPF_B | BPF_ABS, jt: 0, jf: 0, k: 0 },
-        // 1: if multicast/broadcast bit set continue else reject (-> insn 7)
-        libc::sock_filter { code: BPF_JMP | BPF_JSET | BPF_K, jt: 0, jf: 5, k: 1 },
-        // 2: A = ether[12] (EtherType)
-        libc::sock_filter { code: BPF_LD | BPF_H | BPF_ABS, jt: 0, jf: 0, k: 12 },
-        // 3: if A == 0x0800 (IPv4) continue else reject (-> insn 7)
-        libc::sock_filter { code: BPF_JMP | BPF_JEQ | BPF_K, jt: 0, jf: 3, k: 0x0800 },
-        // 4: A = ip[9] (protocol) at offset 14+9
-        libc::sock_filter { code: BPF_LD | BPF_B | BPF_ABS, jt: 0, jf: 0, k: 23 },
-        // 5: if A == 17 (UDP) accept else reject
-        libc::sock_filter { code: BPF_JMP | BPF_JEQ | BPF_K, jt: 0, jf: 1, k: 17 },
-        // 6: accept whole packet
+        // 1: A &= 0xf0 (isolate version nibble)
+        libc::sock_filter { code: BPF_ALU | BPF_AND | BPF_K, jt: 0, jf: 0, k: 0xf0 },
+        // 2: if A == 0x40 (IPv4) continue else reject (-> insn 11)
+        libc::sock_filter { code: BPF_JMP | BPF_JEQ | BPF_K, jt: 0, jf: 8, k: 0x40 },
+        // 3: A = ip[9] (protocol)
+        libc::sock_filter { code: BPF_LD | BPF_B | BPF_ABS, jt: 0, jf: 0, k: 9 },
+        // 4: if A == 17 (UDP) continue else reject (-> insn 11)
+        libc::sock_filter { code: BPF_JMP | BPF_JEQ | BPF_K, jt: 0, jf: 6, k: 17 },
+        // 5: A = ip[16] (first octet of dest IP)
+        libc::sock_filter { code: BPF_LD | BPF_B | BPF_ABS, jt: 0, jf: 0, k: 16 },
+        // 6: A &= 0xf0
+        libc::sock_filter { code: BPF_ALU | BPF_AND | BPF_K, jt: 0, jf: 0, k: 0xf0 },
+        // 7: if A == 0xe0 accept (multicast 224.0.0.0/4, -> insn 10), else fall through
+        libc::sock_filter { code: BPF_JMP | BPF_JEQ | BPF_K, jt: 2, jf: 0, k: 0xe0 },
+        // 8: A = ip[19] (last octet of dest IP)
+        libc::sock_filter { code: BPF_LD | BPF_B | BPF_ABS, jt: 0, jf: 0, k: 19 },
+        // 9: if A == 0xff accept (limited or directed broadcast) else reject
+        libc::sock_filter { code: BPF_JMP | BPF_JEQ | BPF_K, jt: 0, jf: 1, k: 0xff },
+        // 10: accept whole packet
         libc::sock_filter { code: BPF_RET | BPF_K, jt: 0, jf: 0, k: 262144 },
-        // 7: reject
+        // 11: reject
         libc::sock_filter { code: BPF_RET | BPF_K, jt: 0, jf: 0, k: 0 },
     ];
 
