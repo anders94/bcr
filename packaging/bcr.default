@@ -1,0 +1,16 @@
+# /etc/default/bcr — environment for the bcr.service systemd unit.
+# See bcr(8) for the full option reference.
+#
+# REQUIRED: which interfaces to relay between. Each flag may be repeated, e.g.
+# BCR_OUTPUT="-o eth1 -o eth2" to fan out, or list an interface as both input
+# and output for a bidirectional relay (bcr never echoes a packet back out the
+# interface it arrived on).
+BCR_INPUT="-i eth0"
+BCR_OUTPUT="-o eth1"
+
+# Optional extra flags appended to the command line. The config file is already
+# passed by the unit as `-c /etc/bcr.conf`; do not repeat it here. Examples:
+#   --rate-limit 5000 --rate-burst 10000   cap broadcast-storm amplification
+#   -u bcr                                  drop to a specific user (default: nobody)
+#   -v                                      log filtered/dropped packets too
+BCR_OPTS=""

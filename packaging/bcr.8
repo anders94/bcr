@@ -1,0 +1,244 @@
+.TH BCR 8 "2026-06-23" "bcr 0.1.0" "System Administration"
+.SH NAME
+bcr \- broadcast relay for Linux
+.SH SYNOPSIS
+.B bcr
+.B \-i
+.I iface
+.RB [ \-i
+.IR iface ...]
+.B \-o
+.I iface
+.RB [ \-o
+.IR iface ...]
+.RB [ \-c
+.IR file ]
+.RB [ \-u
+.IR user ]
+.RB [ \-\-no\-drop ]
+.RB [ \-\-rate\-limit
+.IR pps ]
+.RB [ \-\-rate\-burst
+.IR n ]
+.RB [ \-v ]
+.SH DESCRIPTION
+.B bcr
+relays IPv4 UDP broadcast and multicast packets between network interfaces using
+.B AF_PACKET
+sockets. It is a hardened, modernized replacement for
+.BR bcrelay (8)
+from the pptpd project.
+.PP
+Each input interface is captured through an
+.B AF_PACKET / SOCK_DGRAM
+socket carrying a kernel BPF filter that passes only IPv4 UDP frames destined to
+a multicast or broadcast address. For every such packet,
+.B bcr
+validates the headers, matches it against the configured rules (first match
+wins; deny by default), optionally rate-limits it, and forwards it out every
+.I other
+output interface \(em never back out the interface it arrived on. The
+destination is rewritten to the output interface's broadcast address (multicast
+destinations are preserved), checksums are recomputed, and a loop-prevention
+marker is applied.
+.PP
+.B bcr
+must be started as root (or with
+.BR CAP_NET_RAW )
+to create the raw sockets. By default it then drops to an unprivileged user;
+see
+.BR "PRIVILEGES" .
+.SH OPTIONS
+.TP
+.BI \-i ", " \-\-input " iface"
+Interface to receive broadcasts from. Required. May be given more than once to
+capture on several interfaces.
+.TP
+.BI \-o ", " \-\-output " iface"
+Interface to relay broadcasts to. Required. May be given more than once. An
+interface listed as both input and output participates in a bidirectional relay;
+a packet is never echoed back out its ingress interface.
+.TP
+.BI \-c ", " \-\-config " file"
+Path to the configuration file (see
+.BR "CONFIGURATION FILE" ).
+.B This option has no default.
+There is
+.I no
+implicit
+.I /etc/bcr.conf
+and no other default path. If
+.B \-c
+is omitted,
+.B bcr
+runs with a built-in allow-all rule and relays
+.I every
+captured broadcast and multicast packet. To get filtered, deny-by-default
+behavior you must pass
+.B \-c
+explicitly. The packaged
+.BR systemd (1)
+unit always passes
+.BR "\-c /etc/bcr.conf" .
+.TP
+.BI \-u ", " \-\-user " user"
+User to drop privileges to after the sockets are created. Defaults to
+.BR nobody .
+See
+.BR "PRIVILEGES" .
+.TP
+.B \-\-no\-drop
+Do not drop privileges; run as root for the entire lifetime. Not recommended.
+.TP
+.BI \-\-rate\-limit " pps"
+Maximum packets per second to relay.
+.B 0
+(the default) means unlimited. Because each accepted packet is fanned out to
+every output interface, a limit here caps broadcast-storm amplification.
+.TP
+.BI \-\-rate\-burst " n"
+Token-bucket burst capacity for
+.BR \-\-rate\-limit .
+Defaults to one second's worth of the configured rate. The bucket holds up to
+.I n
+tokens and refills at the rate; packets arriving with an empty bucket are
+dropped.
+.TP
+.BR \-v ", " \-\-verbose
+Also log packets that were filtered or dropped, not just relayed packets.
+.SH "CONFIGURATION FILE"
+The configuration is a line-based allowlist. Blank lines and lines beginning
+with
+.B #
+are ignored. Each rule has the form:
+.PP
+.RS
+.nf
+ACTION PROTO SRC_IP[:SRC_PORT] DST_IP[:DST_PORT] [NAT_OPTIONS]
+.fi
+.RE
+.PP
+Rules are evaluated top to bottom and the first match wins. Any packet matching
+no rule is denied \(em deny-by-default is built in, so a trailing
+.B "deny any any:any any:any"
+is unnecessary.
+.TP
+.B ACTION
+.B allow
+or
+.BR deny .
+.TP
+.B PROTO
+.B udp
+or
+.BR any .
+TCP has no broadcast/multicast semantics and is rejected at parse time.
+.TP
+.B SRC_IP, DST_IP
+A dotted-quad address, a CIDR block
+.RI ( x.x.x.x/n ),
+or
+.BR any .
+.B DST_IP
+also accepts
+.B 255.255.255.255
+(limited broadcast),
+.B directed
+(a subnet-directed broadcast such as 192.168.1.255), and
+.BR any .
+.TP
+.B SRC_PORT, DST_PORT
+A single port, an inclusive range
+.IR start - end ,
+or
+.BR any .
+.TP
+.B NAT_OPTIONS
+Optional, and only valid on
+.B allow
+rules:
+.BR snat= IP ,
+.BR dnat= IP ,
+.BR sport= PORT ,
+.BR dport= PORT .
+.PP
+Parsing is strict:
+.B bcr
+exits at startup with a line-numbered error rather than silently misbehaving.
+An unknown or misspelled option, an invalid address/port/CIDR, an inverted port
+range, or NAT options on a
+.B deny
+rule are all hard errors.
+.SH PRIVILEGES
+Creating an
+.B AF_PACKET
+socket requires
+.B CAP_NET_RAW
+(root).
+.B bcr
+opens its sockets first and then, unless
+.B \-\-no\-drop
+is given, drops privileges to the account named by
+.B \-u
+(default
+.BR nobody ):
+it sets the supplementary groups, gid, and uid of that account and then verifies
+it can no longer regain root. The relay loop performs only
+.BR read (2)
+and
+.BR sendto (2)
+on already-open descriptors, which require no privileges. The user dropped to
+is printed at startup; if the drop or the re-escalation check fails,
+.B bcr
+exits rather than continue as root.
+.SH "LOOP PREVENTION"
+.B bcr
+prevents relay loops two ways. Structurally, it never relays a packet back out
+the interface it arrived on. Additionally, relayed packets are marked with
+TTL=1 and the IPv4 Identification field set to
+.BR 0xBCBC ;
+a packet arriving with both is treated as already-relayed and dropped, which
+catches loops between separate
+.B bcr
+instances on a shared segment. Unlike the original bcrelay,
+.B bcr
+does not zero the UDP checksum as a marker (a zero checksum is legal and
+common); it recomputes a valid UDP checksum on every relayed packet.
+.SH "EXIT STATUS"
+.B bcr
+exits non-zero on a configuration error, a missing or down interface,
+insufficient privileges, or a failed privilege drop. Once running it stays in
+the foreground until killed.
+.SH EXAMPLES
+.TP
+Relay only what \fI/etc/bcr.conf\fR allows, from eth0 to eth1:
+.B sudo bcr \-i eth0 \-o eth1 \-c /etc/bcr.conf
+.TP
+Bidirectional relay between two segments:
+.B sudo bcr \-i eth0 \-i eth1 \-o eth0 \-o eth1 \-c /etc/bcr.conf
+.TP
+Cap a storm at 5000 pps with a 10000-packet burst:
+.B sudo bcr \-i eth0 \-o eth1 \-c /etc/bcr.conf \-\-rate\-limit 5000 \-\-rate\-burst 10000
+.SH FILES
+.TP
+.I /etc/bcr.conf
+Conventional configuration file location. It is
+.I only
+read when passed explicitly with
+.BR \-c ;
+it is not a built-in default.
+.TP
+.I /etc/default/bcr
+Environment file read by the packaged
+.BR systemd (1)
+unit, supplying the
+.B \-i
+/
+.B \-o
+interface flags and any extra options.
+.SH "SEE ALSO"
+.BR bcrelay (8),
+.BR systemd (1),
+.BR tcpdump (8)
+.PP
+Original bcrelay: https://sources.debian.org/src/pptpd/
