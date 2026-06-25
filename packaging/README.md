@@ -35,16 +35,42 @@ sudo install -m 0644 packaging/bcr.8 /usr/share/man/man8/bcr.8
 sudo install -m 0644 packaging/bcr.default /etc/default/bcr
 sudo $EDITOR /etc/default/bcr        # set BCR_INPUT / BCR_OUTPUT
 
-# 5. Install and enable the unit.
+# 5. Install the unit and check it before starting (see "Validate the unit").
 sudo install -m 0644 packaging/systemd/bcr.service /etc/systemd/system/bcr.service
 sudo systemctl daemon-reload
+systemd-analyze verify bcr.service
+
+# 6. Enable and start.
 sudo systemctl enable --now bcr.service
 
-# 6. Verify.
+# 7. Verify it is running.
 sudo systemctl status bcr.service
 journalctl -u bcr.service -f        # bcr logs one line per relayed packet
 man 8 bcr
 ```
+
+## Validate the unit
+
+After `daemon-reload` (and before relying on the service), check the unit for
+syntax/ordering problems and review its sandboxing:
+
+```bash
+# Parse the unit and its dependencies; non-zero exit and warnings on any
+# problem (bad directive, missing ExecStart binary, ordering cycles, ...).
+systemd-analyze verify bcr.service
+
+# Score the sandboxing and list each hardening setting as exposed/safe. Run it
+# against the installed unit to audit the directives this package ships.
+systemd-analyze security bcr.service
+```
+
+`systemd-analyze security` reports an overall exposure score (lower is better)
+and flags anything left open. With the directives in this unit you should see a
+hardened result; the items that necessarily stay "exposed" are inherent to what
+`bcr` does: it runs as root (to open `AF_PACKET` sockets before dropping
+privileges) and keeps `CAP_NET_RAW`/`CAP_SETUID`/`CAP_SETGID`, so capability- and
+user-related checks will not be fully green. Treat a regression in the score
+after editing the unit as a signal to re-review, not the absolute number.
 
 ## How privileges work under systemd
 
