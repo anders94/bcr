@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 use anyhow::Result;
 use nix::ifaddrs::getifaddrs;
 

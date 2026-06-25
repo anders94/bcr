@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 use anyhow::{Context, Result};
 use std::net::Ipv4Addr;
 use std::os::unix::io::{AsRawFd, OwnedFd};

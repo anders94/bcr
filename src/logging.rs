@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 use crate::config::{PacketInfo, Protocol};
 
 /// One-line relay log format

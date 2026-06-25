@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 use std::time::Instant;
 
 /// Token-bucket rate limiter bounding how many packets the relay accepts per

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 use anyhow::{anyhow, Result};
 use pnet::packet::ipv4::{checksum as ipv4_checksum, MutableIpv4Packet};
 use pnet::packet::udp::MutableUdpPacket;

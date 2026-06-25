@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 use crate::config::{Action, Config, PacketInfo, Rule};
 
 pub struct Filter {
