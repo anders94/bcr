@@ -3,6 +3,7 @@ name = "bcr"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-2.0-or-later"
+description = "Modern, fast broadcast relay for Linux (UDP broadcast/multicast forwarder)"
 
 [dependencies]
 libc = "0.2"
@@ -27,12 +28,12 @@ section = "net"
 priority = "optional"
 extended-description = """\
 A modern, performance-optimized broadcast relay for Linux written in Rust. \
-bcr relays UDP/TCP broadcast packets between network interfaces using \
+bcr relays UDP broadcast and multicast packets between network interfaces using \
 AF_PACKET raw sockets, with rule-based filtering and optional NAT. It is a \
 modern replacement for bcrelay from the pptpd project."""
 assets = [
     ["target/release/bcr", "usr/bin/", "755"],
-    ["packaging/bcr.1", "usr/share/man/man1/bcr.1", "644"],
+    ["packaging/bcr.8", "usr/share/man/man8/bcr.8", "644"],
     ["packaging/bcr.conf", "etc/bcr.conf", "644"],
     ["packaging/bcr.default", "etc/default/bcr", "644"],
     ["README.md", "usr/share/doc/bcr/README.md", "644"],
