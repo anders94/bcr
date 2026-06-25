@@ -19,3 +19,27 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+[package.metadata.deb]
+maintainer = "Anders Brownworth <anders-git-bcr@evantide.com>"
+copyright = "2026, bcr contributors"
+section = "net"
+priority = "optional"
+extended-description = """\
+A modern, performance-optimized broadcast relay for Linux written in Rust. \
+bcr relays UDP/TCP broadcast packets between network interfaces using \
+AF_PACKET raw sockets, with rule-based filtering and optional NAT. It is a \
+modern replacement for bcrelay from the pptpd project."""
+assets = [
+    ["target/release/bcr", "usr/bin/", "755"],
+    ["packaging/bcr.1", "usr/share/man/man1/bcr.1", "644"],
+    ["packaging/bcr.conf", "etc/bcr.conf", "644"],
+    ["packaging/bcr.default", "etc/default/bcr", "644"],
+    ["README.md", "usr/share/doc/bcr/README.md", "644"],
+]
+conf-files = ["/etc/bcr.conf", "/etc/default/bcr"]
+
+[package.metadata.deb.systemd-units]
+unit-scripts = "packaging/systemd"
+enable = false
+start = false
