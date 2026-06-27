@@ -7,7 +7,10 @@ description = "Modern, fast broadcast relay for Linux (UDP broadcast/multicast f
 
 [dependencies]
 libc = "0.2"
-nix = { version = "0.31", features = ["net", "socket", "ioctl", "poll", "user"] }
+# Accept 0.30 or 0.31: bcr only uses the common API subset, and a widened range
+# lets distros build against whatever they ship (e.g. Debian's nix 0.30.1) while
+# crates.io/dev builds still pick the latest 0.31.x.
+nix = { version = ">=0.30, <0.32", features = ["net", "socket", "ioctl", "poll", "user"] }
 pnet = "0.35"
 clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
