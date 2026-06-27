@@ -19,3 +19,6 @@ Thumbs.db
 
 # Binary
 /bcr
+
+# Generated at build time by packaging/build-deb.sh (from packaging/changelog)
+/packaging/changelog.gz

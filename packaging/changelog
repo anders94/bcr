@@ -1,5 +1,5 @@
-bcr (0.1.0-1) unstable; urgency=medium
+bcr (0.2.0) unstable; urgency=medium
 
-  * Initial release.
+  * First tagged release.
 
- -- Anders Brownworth <anders-git-bcr@evantide.com>  Wed, 24 Jun 2026 00:00:00 +0000
+ -- Anders Brownworth <anders-git-bcr@evantide.com>  Sat, 27 Jun 2026 00:00:00 +0000

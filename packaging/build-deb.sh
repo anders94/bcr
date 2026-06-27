@@ -30,6 +30,9 @@ docker run --rm \
     apt-get install -y -qq gcc-x86-64-linux-gnu >/dev/null
     rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu >/dev/null
     cargo install cargo-deb --locked
+    # A native package wants its changelog named changelog.gz (see Cargo.toml);
+    # -n keeps the gzip reproducible (no stored name/timestamp).
+    gzip -9nc packaging/changelog > packaging/changelog.gz
     export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
     for a in $ARCHS; do
       case "$a" in

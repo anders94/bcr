@@ -1,6 +1,6 @@
 [package]
 name = "bcr"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "GPL-2.0-or-later"
 description = "Modern, fast broadcast relay for Linux (UDP broadcast/multicast forwarder)"
@@ -23,12 +23,16 @@ panic = "abort"
 
 [package.metadata.deb]
 maintainer = "Anders Brownworth <anders-git-bcr@evantide.com>"
+# Native package: no Debian revision, so the package version is just the crate
+# version (e.g. 0.2.0, not 0.2.0-1).
+revision = ""
 # Required for cargo-deb to inject the systemd unit registration / daemon-reload
-# logic at the #DEBHELPER# token in these scripts (it is not emitted otherwise).
+# logic at the DEBHELPER token in these scripts (it is not emitted otherwise).
 maintainer-scripts = "packaging/maintainer-scripts"
-# Installed as /usr/share/doc/bcr/changelog.Debian.gz (required by policy for a
-# non-native package, i.e. one with a Debian revision like 0.1.0-1).
-changelog = "packaging/changelog"
+# A native package's changelog must be named changelog.gz. cargo-deb's
+# `changelog` field would instead install changelog.Debian.gz (which lintian
+# flags on a native package), so we don't use it: build-deb.sh gzips
+# packaging/changelog to packaging/changelog.gz, shipped as an asset below.
 copyright = "2026, bcr contributors"
 section = "net"
 priority = "optional"
@@ -45,6 +49,7 @@ assets = [
     ["packaging/bcr.8", "usr/share/man/man8/bcr.8", "644"],
     ["packaging/bcr.conf", "etc/bcr.conf", "644"],
     ["packaging/bcr.default", "etc/default/bcr", "644"],
+    ["packaging/changelog.gz", "usr/share/doc/bcr/changelog.gz", "644"],
     ["README.md", "usr/share/doc/bcr/README.md", "644"],
 ]
 conf-files = ["/etc/bcr.conf", "/etc/default/bcr"]

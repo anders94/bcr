@@ -37,7 +37,7 @@ pub enum BcrError {
 
 #[derive(Parser, Debug)]
 #[command(name = "bcr")]
-#[command(version = "0.1.0")]
+#[command(version)]
 #[command(about = "Modern broadcast relay for Linux", long_about = None)]
 struct Cli {
     /// Input interface(s) to receive broadcasts from (can be specified multiple times)
@@ -126,7 +126,7 @@ fn main() -> Result<()> {
     };
 
     // Print startup banner
-    println!("bcr v0.1.0 starting");
+    println!("bcr v{} starting", env!("CARGO_PKG_VERSION"));
     println!("  Input:   {}", cli.input.join(", "));
     println!("  Output:  {}", cli.output.join(", "));
     println!("  Config:  {}", cli.config.as_deref().unwrap_or("(none)"));
