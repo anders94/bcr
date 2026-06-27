@@ -1,0 +1,8 @@
+#!/bin/sh
+# bcr postrm. cargo-deb expands the systemd disable/cleanup logic in place of
+# the helper token below (daemon-reload; on purge it removes deb-systemd-helper
+# state). Do not write the literal helper token in comments -- cargo-deb
+# replaces every occurrence of it.
+set -e
+#DEBHELPER#
+exit 0

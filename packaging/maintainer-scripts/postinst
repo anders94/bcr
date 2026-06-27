@@ -1,0 +1,10 @@
+#!/bin/sh
+# bcr postinst. cargo-deb expands its systemd registration / daemon-reload
+# logic in place of the helper token below (see the systemd-units metadata in
+# Cargo.toml). With enable=false the unit is registered but not enabled on a
+# fresh install; the admin enables it after setting interfaces in
+# /etc/default/bcr. NOTE: do not write the literal helper token anywhere but
+# the line below -- cargo-deb replaces every occurrence, including in comments.
+set -e
+#DEBHELPER#
+exit 0

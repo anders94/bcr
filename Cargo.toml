@@ -23,9 +23,18 @@ panic = "abort"
 
 [package.metadata.deb]
 maintainer = "Anders Brownworth <anders-git-bcr@evantide.com>"
+# Required for cargo-deb to inject the systemd unit registration / daemon-reload
+# logic at the #DEBHELPER# token in these scripts (it is not emitted otherwise).
+maintainer-scripts = "packaging/maintainer-scripts"
+# Installed as /usr/share/doc/bcr/changelog.Debian.gz (required by policy for a
+# non-native package, i.e. one with a Debian revision like 0.1.0-1).
+changelog = "packaging/changelog"
 copyright = "2026, bcr contributors"
 section = "net"
 priority = "optional"
+# $auto keeps cargo-deb's automatic libc/shared-lib detection; init-system-helpers
+# provides deb-systemd-helper, used by the generated maintainer scripts.
+depends = "$auto, init-system-helpers (>= 1.54~)"
 extended-description = """\
 A modern, performance-optimized broadcast relay for Linux written in Rust. \
 bcr relays UDP broadcast and multicast packets between network interfaces using \
