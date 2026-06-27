@@ -8,7 +8,6 @@ description = "Modern, fast broadcast relay for Linux (UDP broadcast/multicast f
 [dependencies]
 libc = "0.2"
 nix = { version = "0.31", features = ["net", "socket", "ioctl", "poll", "user"] }
-socket2 = "0.5"
 pnet = "0.35"
 clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
